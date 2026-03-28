@@ -1,0 +1,172 @@
+// Package config defines configuration types and defaults for the SEO crawler.
+package config
+
+import "time"
+
+// ScopeMode controls how crawl boundaries are determined.
+type ScopeMode string
+
+const (
+	ScopeModeRegistrableDomain ScopeMode = "registrable_domain"
+	ScopeModeExactHost         ScopeMode = "exact_host"
+	ScopeModeAllowlist         ScopeMode = "allowlist"
+)
+
+// RenderMode controls when pages are rendered with a headless browser.
+type RenderMode string
+
+const (
+	RenderModeStatic  RenderMode = "static"
+	RenderModeHybrid  RenderMode = "hybrid"
+	RenderModeBrowser RenderMode = "browser"
+)
+
+// RobotsUnreachablePolicy controls behavior when robots.txt cannot be fetched.
+type RobotsUnreachablePolicy string
+
+const (
+	RobotsUnreachablePolicyAllow          RobotsUnreachablePolicy = "allow"
+	RobotsUnreachablePolicyDisallow       RobotsUnreachablePolicy = "disallow"
+	RobotsUnreachablePolicyCacheThenAllow RobotsUnreachablePolicy = "cache_then_allow"
+)
+
+// URLGroupConfig defines overrides for specific URL patterns.
+type URLGroupConfig struct {
+	Name                 string `json:"name"`
+	Pattern              string `json:"pattern"`
+	ThinContentThreshold *int   `json:"thinContentThreshold,omitempty"`
+}
+
+// Config holds all configuration for the SEO crawler MCP server.
+type Config struct {
+	// Crawl scope
+	ScopeMode    ScopeMode `json:"scopeMode"`
+	AllowedHosts []string  `json:"allowedHosts,omitempty"`
+
+	// HTTP client
+	RequestTimeout      time.Duration `json:"requestTimeout"`
+	MaxResponseBody     int64         `json:"maxResponseBody"`
+	MaxDecompressedBody int64         `json:"maxDecompressedBody"`
+	UserAgent           string        `json:"userAgent"`
+	Retries             int           `json:"retries"`
+	MaxRedirectHops     int           `json:"maxRedirectHops"`
+
+	// Concurrency
+	PerHostConcurrency int `json:"perHostConcurrency"`
+	GlobalConcurrency  int `json:"globalConcurrency"`
+
+	// Crawl limits
+	MaxPages int `json:"maxPages"`
+	MaxDepth int `json:"maxDepth"`
+
+	// Rendering
+	RenderMode           RenderMode    `json:"renderMode"`
+	RenderWaitMs         int           `json:"renderWaitMs"`
+	MaxBrowserInstances  int           `json:"maxBrowserInstances"`
+	BrowserRenderTimeout time.Duration `json:"browserRenderTimeout"`
+	ForceRenderPatterns  []string      `json:"forceRenderPatterns,omitempty"`
+
+	// Robots
+	RespectRobots           bool                    `json:"respectRobots"`
+	RobotsUnreachablePolicy RobotsUnreachablePolicy `json:"robotsUnreachablePolicy"`
+
+	// URL normalization
+	IgnoreParams            []string `json:"ignoreParams"`
+	MaxQueryVariantsPerPath int      `json:"maxQueryVariantsPerPath"`
+
+	// Security
+	AllowInsecureTLS     bool `json:"allowInsecureTLS"`
+	AllowPrivateNetworks bool `json:"allowPrivateNetworks"`
+	SSRFProtection       bool `json:"ssrfProtection"`
+
+	// SEO thresholds
+	TitleMaxLength       int `json:"titleMaxLength"`
+	TitleMinLength       int `json:"titleMinLength"`
+	DescriptionMaxLength int `json:"descriptionMaxLength"`
+	DescriptionMinLength int `json:"descriptionMinLength"`
+	ThinContentThreshold int `json:"thinContentThreshold"`
+	DeepPageThreshold    int `json:"deepPageThreshold"`
+
+	// Rate limiting
+	MaxConcurrentCrawls  int           `json:"maxConcurrentCrawls"`
+	MaxConcurrentAnalyze int           `json:"maxConcurrentAnalyze"`
+	MaxJobsPerHour       int           `json:"maxJobsPerHour"`
+	AnalyzeJobTTL        time.Duration `json:"analyzeJobTTL"`
+
+	// Sitemap
+	MaxSitemapEntries int `json:"maxSitemapEntries"`
+
+	// Resources
+	MaxQueueMemoryMB int           `json:"maxQueueMemoryMB"`
+	DBPath           string        `json:"dbPath"`
+	// MaxJobAge is the maximum age of completed jobs before purge. 0 means disabled.
+	MaxJobAge        time.Duration `json:"maxJobAge"`
+
+	// URL group overrides
+	URLGroups []URLGroupConfig `json:"urlGroups"`
+}
+
+// DefaultConfig returns a Config populated with sensible defaults.
+func DefaultConfig() Config {
+	return Config{
+		ScopeMode:    ScopeModeRegistrableDomain,
+		AllowedHosts: []string{},
+
+		RequestTimeout:      10 * time.Second,
+		MaxResponseBody:     5 * 1024 * 1024,
+		MaxDecompressedBody: 20 * 1024 * 1024,
+		UserAgent:           "seo-crawler-mcp/0.1",
+		Retries:             1,
+		MaxRedirectHops:     10,
+
+		PerHostConcurrency: 2,
+		GlobalConcurrency:  8,
+
+		MaxPages: 10000,
+		MaxDepth: 50,
+
+		RenderMode:           RenderModeHybrid,
+		RenderWaitMs:         2000,
+		MaxBrowserInstances:  2,
+		BrowserRenderTimeout: 30 * time.Second,
+		ForceRenderPatterns:  []string{},
+
+		RespectRobots:           true,
+		RobotsUnreachablePolicy: RobotsUnreachablePolicyAllow,
+
+		IgnoreParams: []string{
+			"utm_source",
+			"utm_medium",
+			"utm_campaign",
+			"utm_term",
+			"utm_content",
+			"fbclid",
+			"gclid",
+		},
+		MaxQueryVariantsPerPath: 50,
+
+		AllowInsecureTLS:     false,
+		AllowPrivateNetworks: false,
+		SSRFProtection:       true,
+
+		TitleMaxLength:       60,
+		TitleMinLength:       30,
+		DescriptionMaxLength: 160,
+		DescriptionMinLength: 70,
+		ThinContentThreshold: 200,
+		DeepPageThreshold:    3,
+
+		MaxConcurrentCrawls:  3,
+		MaxConcurrentAnalyze: 50,
+		MaxJobsPerHour:       20,
+		AnalyzeJobTTL:        24 * time.Hour,
+
+		MaxSitemapEntries: 500000,
+
+		MaxQueueMemoryMB: 100,
+		DBPath:           "seo-crawler.db",
+		MaxJobAge:        0,
+
+		URLGroups: []URLGroupConfig{},
+	}
+}
