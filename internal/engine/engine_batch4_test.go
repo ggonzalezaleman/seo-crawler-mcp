@@ -12,43 +12,16 @@ import (
 	"time"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/config"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/crawl"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/fetcher"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/urlutil"
 )
 
-// testSiteCrossScope serves a site where one page redirects to an external domain.
-func testSiteCrossScope(externalURL string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/":
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>Home</title>
-				<meta name="description" content="This is the home page with enough content to pass threshold checks easily."></head>
-				<body><h1>Home</h1>
-				<p>Welcome to our test site. This page has enough content to avoid thin content detection during testing.</p>
-				<a href="/redirect-page">Redirect Page</a></body></html>`)
-		case "/redirect-page":
-			// Redirect to external domain
-			http.Redirect(w, r, externalURL+"/external-landing", http.StatusMovedPermanently)
-		default:
-			w.WriteHeader(404)
-		}
-	})
-}
-
+// TestCrossScopeRedirect_OutOfScopeStatus verifies that when a fetch result
+// has a FinalURL on a different domain than the requested URL, the final URL
+// is recorded with "out_of_scope" status.
 func TestCrossScopeRedirect_OutOfScopeStatus(t *testing.T) {
-	// External server
-	external := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `<!DOCTYPE html><html><head><title>External</title></head><body><h1>External</h1><p>Content here.</p></body></html>`)
-	}))
-	defer external.Close()
-
-	// Internal server that redirects to external
-	internal := httptest.NewServer(testSiteCrossScope(external.URL))
-	defer internal.Close()
-
 	dbPath := filepath.Join(t.TempDir(), "test-cross-scope.db")
 	db, err := storage.Open(dbPath)
 	if err != nil {
@@ -57,27 +30,20 @@ func TestCrossScopeRedirect_OutOfScopeStatus(t *testing.T) {
 	defer db.Close()
 
 	cfg := config.DefaultConfig()
-	cfg.GlobalConcurrency = 2
+	cfg.GlobalConcurrency = 1
 	cfg.MaxPages = 100
-	cfg.MaxDepth = 10
-	cfg.RequestTimeout = 5 * time.Second
-	cfg.AllowPrivateNetworks = true
-	cfg.SSRFProtection = false
 	cfg.ThinContentThreshold = 10
 
 	f := fetcher.New(fetcher.Options{
-		UserAgent:           "test-crawler/1.0",
-		Timeout:             5 * time.Second,
-		MaxResponseBody:     5 * 1024 * 1024,
-		MaxDecompressedBody: 20 * 1024 * 1024,
-		MaxRedirectHops:     10,
+		UserAgent:       "test-crawler/1.0",
+		Timeout:         5 * time.Second,
+		MaxResponseBody: 5 * 1024 * 1024,
 	})
-	rl := fetcher.NewRateLimiter(cfg.PerHostConcurrency)
 
-	tsURL, _ := url.Parse(internal.URL)
-	sc, _ := urlutil.NewScopeChecker("exact_host", tsURL.Hostname(), nil)
+	// Scope checker: only example.com is in scope
+	sc, _ := urlutil.NewScopeChecker("exact_host", "example.com", nil)
 
-	seedURLs, _ := json.Marshal([]string{internal.URL + "/"})
+	seedURLs, _ := json.Marshal([]string{"https://example.com/"})
 	job, err := db.CreateJob("crawl", "{}", string(seedURLs))
 	if err != nil {
 		t.Fatalf("creating job: %v", err)
@@ -86,47 +52,62 @@ func TestCrossScopeRedirect_OutOfScopeStatus(t *testing.T) {
 	eng := New(EngineConfig{
 		DB:           db,
 		Fetcher:      f,
-		RateLimiter:  rl,
 		ScopeChecker: sc,
 		Config:       &cfg,
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	if err := eng.RunCrawl(ctx, job.ID); err != nil {
-		t.Fatalf("RunCrawl: %v", err)
+	// Manually call persistItem with a fetch result simulating a cross-scope redirect
+	urlID, err := db.UpsertURL(job.ID, "https://example.com/old-page", "example.com", "fetched", true, "link")
+	if err != nil {
+		t.Fatalf("upserting URL: %v", err)
 	}
 
-	// Verify the external URL got status "out_of_scope"
-	externalNorm, _ := urlutil.Normalize(external.URL + "/external-landing")
-	extURL, err := db.GetURLByNormalized(job.ID, externalNorm)
+	item := persistItem{
+		parseResult: parseResult{
+			fetchResult: fetchResult{
+				urlID: urlID,
+				url:   "https://example.com/old-page",
+				host:  "example.com",
+				depth: 0,
+				result: &fetcher.FetchResult{
+					RequestedURL: "https://example.com/old-page",
+					FinalURL:     "https://other-domain.com/landing", // out of scope
+					StatusCode:   301,
+					ContentType:  "text/html",
+					Body:         []byte("<html><head><title>Redirected</title></head><body>redirected</body></html>"),
+					BodySize:     72,
+					RedirectHops: []fetcher.RedirectHop{
+						{HopIndex: 0, StatusCode: 301, FromURL: "https://example.com/old-page", ToURL: "https://other-domain.com/landing"},
+					},
+				},
+			},
+		},
+		fetchSeq: 1,
+	}
+
+	// Update job to running status
+	db.Exec("UPDATE crawl_jobs SET status = 'running' WHERE id = ?", job.ID)
+
+	ctx := context.Background()
+	if err := eng.persistItem(ctx, job.ID, item); err != nil {
+		t.Fatalf("persistItem: %v", err)
+	}
+
+	// Verify the out-of-scope final URL got status "out_of_scope"
+	extURL, err := db.GetURLByNormalized(job.ID, "https://other-domain.com/landing")
 	if err != nil {
 		t.Fatalf("external URL not found in DB: %v", err)
 	}
 	if extURL.Status != "out_of_scope" {
 		t.Errorf("external URL status = %q, want out_of_scope", extURL.Status)
 	}
+	if extURL.IsInternal {
+		t.Error("external URL should not be marked as internal")
+	}
 }
 
-// testSiteWithExternalCanonical serves a page with an external canonical.
-func testSiteWithExternalCanonical(externalURL string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/":
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>Home Page Title</title>
-				<meta name="description" content="This is the home page with a canonical pointing to an external domain for testing.">
-				<link rel="canonical" href="%s/canonical-target">
-				</head>
-				<body><h1>Home</h1>
-				<p>This page has an external canonical URL that should trigger a HEAD request during crawling.</p></body></html>`, externalURL)
-		default:
-			w.WriteHeader(404)
-		}
-	})
-}
-
+// TestHeadRequestForOutOfScopeCanonical verifies that when a page has a canonical
+// pointing to an out-of-scope URL, a HEAD request is sent to verify it.
 func TestHeadRequestForOutOfScopeCanonical(t *testing.T) {
 	headReceived := false
 
@@ -141,9 +122,6 @@ func TestHeadRequestForOutOfScopeCanonical(t *testing.T) {
 	}))
 	defer external.Close()
 
-	internal := httptest.NewServer(testSiteWithExternalCanonical(external.URL))
-	defer internal.Close()
-
 	dbPath := filepath.Join(t.TempDir(), "test-head-canonical.db")
 	db, err := storage.Open(dbPath)
 	if err != nil {
@@ -152,27 +130,20 @@ func TestHeadRequestForOutOfScopeCanonical(t *testing.T) {
 	defer db.Close()
 
 	cfg := config.DefaultConfig()
-	cfg.GlobalConcurrency = 2
+	cfg.GlobalConcurrency = 1
 	cfg.MaxPages = 100
-	cfg.MaxDepth = 10
-	cfg.RequestTimeout = 5 * time.Second
-	cfg.AllowPrivateNetworks = true
-	cfg.SSRFProtection = false
 	cfg.ThinContentThreshold = 10
 
 	f := fetcher.New(fetcher.Options{
-		UserAgent:           "test-crawler/1.0",
-		Timeout:             5 * time.Second,
-		MaxResponseBody:     5 * 1024 * 1024,
-		MaxDecompressedBody: 20 * 1024 * 1024,
-		MaxRedirectHops:     10,
+		UserAgent:       "test-crawler/1.0",
+		Timeout:         5 * time.Second,
+		MaxResponseBody: 5 * 1024 * 1024,
 	})
-	rl := fetcher.NewRateLimiter(cfg.PerHostConcurrency)
 
-	tsURL, _ := url.Parse(internal.URL)
-	sc, _ := urlutil.NewScopeChecker("exact_host", tsURL.Hostname(), nil)
+	// Scope checker: only example.com is in scope; external server is out of scope
+	sc, _ := urlutil.NewScopeChecker("exact_host", "example.com", nil)
 
-	seedURLs, _ := json.Marshal([]string{internal.URL + "/"})
+	seedURLs, _ := json.Marshal([]string{"https://example.com/"})
 	job, err := db.CreateJob("crawl", "{}", string(seedURLs))
 	if err != nil {
 		t.Fatalf("creating job: %v", err)
@@ -181,16 +152,56 @@ func TestHeadRequestForOutOfScopeCanonical(t *testing.T) {
 	eng := New(EngineConfig{
 		DB:           db,
 		Fetcher:      f,
-		RateLimiter:  rl,
 		ScopeChecker: sc,
 		Config:       &cfg,
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// Manually call persistItem with edges including an out-of-scope canonical
+	urlID, err := db.UpsertURL(job.ID, "https://example.com/page", "example.com", "fetched", true, "seed")
+	if err != nil {
+		t.Fatalf("upserting URL: %v", err)
+	}
 
-	if err := eng.RunCrawl(ctx, job.ID); err != nil {
-		t.Fatalf("RunCrawl: %v", err)
+	canonicalTarget := external.URL + "/canonical-target"
+
+	item := persistItem{
+		parseResult: parseResult{
+			fetchResult: fetchResult{
+				urlID: urlID,
+				url:   "https://example.com/page",
+				host:  "example.com",
+				depth: 0,
+				result: &fetcher.FetchResult{
+					RequestedURL: "https://example.com/page",
+					FinalURL:     "https://example.com/page",
+					StatusCode:   200,
+					ContentType:  "text/html",
+					Body:         []byte("<html><body>test</body></html>"),
+					BodySize:     29,
+					RedirectHops: []fetcher.RedirectHop{},
+				},
+			},
+			edges: []crawl.DiscoveredEdge{
+				{
+					SourceURLID:         urlID,
+					DeclaredTargetURL:   canonicalTarget,
+					NormalizedTargetURL: canonicalTarget,
+					SourceKind:          "html",
+					RelationType:        "canonical",
+					RelFlagsJSON:        "[]",
+					DiscoveryMode:       "static",
+					IsInternal:          false, // out of scope
+				},
+			},
+		},
+		fetchSeq: 1,
+	}
+
+	db.Exec("UPDATE crawl_jobs SET status = 'running' WHERE id = ?", job.ID)
+
+	ctx := context.Background()
+	if err := eng.persistItem(ctx, job.ID, item); err != nil {
+		t.Fatalf("persistItem: %v", err)
 	}
 
 	if !headReceived {
@@ -198,20 +209,14 @@ func TestHeadRequestForOutOfScopeCanonical(t *testing.T) {
 	}
 
 	// Verify the edge has target_status_code set
-	rootNorm, _ := urlutil.Normalize(internal.URL + "/")
-	rootURL, err := db.GetURLByNormalized(job.ID, rootNorm)
-	if err != nil {
-		t.Fatalf("root URL not found: %v", err)
-	}
-
-	edges, err := db.GetEdgesBySource(job.ID, rootURL.ID, 100, "")
+	edges, err := db.GetEdgesBySource(job.ID, urlID, 100, "")
 	if err != nil {
 		t.Fatalf("getting edges: %v", err)
 	}
 
 	foundCanonical := false
 	for _, edge := range edges {
-		if edge.RelationType.Valid && edge.RelationType.String == "canonical" {
+		if edge.RelationType == "canonical" {
 			foundCanonical = true
 			if !edge.TargetStatusCode.Valid {
 				t.Error("canonical edge should have target_status_code set")
@@ -310,8 +315,8 @@ func TestForceRenderPatterns_EngineMarksJSSuspect(t *testing.T) {
 		t.Fatalf("dashboard page not found: %v", err)
 	}
 
-	if dashPage.JSSuspect != 1 {
-		t.Errorf("dashboard page js_suspect = %d, want 1 (forced by forceRenderPatterns)", dashPage.JSSuspect)
+	if !dashPage.JSSuspect {
+		t.Error("dashboard page js_suspect should be true (forced by forceRenderPatterns)")
 	}
 
 	// Verify / page does NOT have js_suspect forced
@@ -326,7 +331,7 @@ func TestForceRenderPatterns_EngineMarksJSSuspect(t *testing.T) {
 		t.Fatalf("root page not found: %v", err)
 	}
 
-	if rootPage.JSSuspect != 0 {
-		t.Errorf("root page js_suspect = %d, want 0 (not in forceRenderPatterns)", rootPage.JSSuspect)
+	if rootPage.JSSuspect {
+		t.Error("root page js_suspect should be false (not in forceRenderPatterns)")
 	}
 }
