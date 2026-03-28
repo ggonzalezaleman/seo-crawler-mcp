@@ -883,10 +883,11 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 		return 0
 	}
 
-	// 2. Get all URLs that have at least one inbound static HTML link edge
+	// 2. Get all URLs that have at least one inbound static HTML link edge (excluding self-links)
 	rows, err = e.db.Query(
-		`SELECT DISTINCT e.declared_target_url
+		`SELECT e.declared_target_url, u_src.normalized_url AS source_url
 		 FROM edges e
+		 JOIN urls u_src ON u_src.id = e.source_url_id AND u_src.job_id = e.job_id
 		 WHERE e.job_id = ? AND e.discovery_mode = 'static' AND e.is_internal = 1 AND e.relation_type = 'link'`,
 		jobID,
 	)
@@ -896,10 +897,13 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 	}
 	linkedURLs := map[string]bool{}
 	for rows.Next() {
-		var u string
-		if scanErr := rows.Scan(&u); scanErr == nil {
-			if norm, normErr := urlutil.Normalize(u); normErr == nil {
-				linkedURLs[norm] = true
+		var targetURL, sourceURL string
+		if scanErr := rows.Scan(&targetURL, &sourceURL); scanErr == nil {
+			if norm, normErr := urlutil.Normalize(targetURL); normErr == nil {
+				// Exclude self-links (source page linking to itself with fragment)
+				if norm != sourceURL {
+					linkedURLs[norm] = true
+				}
 			}
 		}
 	}
