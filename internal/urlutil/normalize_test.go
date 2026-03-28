@@ -122,6 +122,21 @@ func TestNormalize(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "reject file scheme",
+			input:   "file:///etc/passwd",
+			wantErr: true,
+		},
+		{
+			name:    "tab in scheme bypass",
+			input:   "java\tscript:void(0)",
+			wantErr: true,
+		},
+		{
+			name:    "newline in scheme bypass",
+			input:   "java\nscript:void(0)",
+			wantErr: true,
+		},
+		{
 			name:  "uppercase query hex",
 			input: "https://example.com/?q=%c3%a9",
 			want:  "https://example.com/?q=%C3%A9",
@@ -246,6 +261,9 @@ func TestIsDroppedScheme(t *testing.T) {
 		{name: "ftp", input: "ftp://example.com", want: true},
 		{name: "tel", input: "tel:+1234567890", want: true},
 		{name: "data", input: "data:text/html,<h1>hi</h1>", want: true},
+		{name: "file", input: "file:///etc/passwd", want: true},
+		{name: "gopher", input: "gopher://evil.com/_GET", want: true},
+		{name: "ldap", input: "ldap://internal:389", want: true},
 	}
 
 	for _, tt := range tests {
@@ -253,6 +271,28 @@ func TestIsDroppedScheme(t *testing.T) {
 			got := IsDroppedScheme(tt.input)
 			if got != tt.want {
 				t.Errorf("IsDroppedScheme(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeControlChars(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"no control chars", "https://example.com/", "https://example.com/"},
+		{"strip tabs", "https://exam\tple.com/", "https://example.com/"},
+		{"strip newlines", "https://exam\nple.com/", "https://example.com/"},
+		{"strip null bytes", "https://example\x00.com/", "https://example.com/"},
+		{"strip mixed", "ht\t\ntp://example.com/", "http://example.com/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeControlChars(tt.input)
+			if got != tt.want {
+				t.Errorf("sanitizeControlChars(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}

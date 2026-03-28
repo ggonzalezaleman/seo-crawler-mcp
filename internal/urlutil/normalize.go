@@ -18,6 +18,12 @@ var droppedSchemes = map[string]bool{
 	"javascript": true,
 	"tel":        true,
 	"data":       true,
+	"file":       true,
+	"gopher":     true,
+	"dict":       true,
+	"ldap":       true,
+	"ldaps":      true,
+	"sftp":       true,
 }
 
 // defaultPorts maps scheme to its default port string.
@@ -84,6 +90,32 @@ func normalizePercentEncoding(s string, decodeUnreserved bool) string {
 	return b.String()
 }
 
+// sanitizeControlChars strips tab, newline, carriage return, and null bytes
+// from a URL string. These characters are silently stripped by url.Parse
+// and could bypass string prefix checks if not removed first.
+func sanitizeControlChars(s string) string {
+	// Fast path: most URLs have no control chars.
+	clean := true
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\t' || s[i] == '\n' || s[i] == '\r' || s[i] == 0 {
+			clean = false
+			break
+		}
+	}
+	if clean {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c != '\t' && c != '\n' && c != '\r' && c != 0 {
+			b.WriteByte(c)
+		}
+	}
+	return b.String()
+}
+
 // Normalize canonicalizes a URL per RFC 3986:
 //   - strips fragments
 //   - lowercases scheme and host
@@ -93,6 +125,8 @@ func normalizePercentEncoding(s string, decodeUnreserved bool) string {
 //   - uppercases remaining percent-encoding hex digits
 //   - rejects non-http(s) schemes
 func Normalize(rawURL string) (string, error) {
+	rawURL = sanitizeControlChars(rawURL)
+
 	// Check for dropped schemes before parsing (some don't parse well).
 	if IsDroppedScheme(rawURL) {
 		if idx := strings.Index(rawURL, ":"); idx > 0 {
@@ -264,6 +298,7 @@ func IsDroppedScheme(rawURL string) bool {
 	if len(prefix) > maxSchemeLen {
 		prefix = prefix[:maxSchemeLen]
 	}
+	prefix = sanitizeControlChars(prefix)
 	lower := strings.ToLower(prefix)
 	for scheme := range droppedSchemes {
 		if strings.HasPrefix(lower, scheme+":") {
