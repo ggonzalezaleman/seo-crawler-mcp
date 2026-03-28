@@ -80,12 +80,22 @@ type discoveredImage struct {
 	sourceURLID   int64
 }
 
+// discoveredAsset holds a resolved asset URL, its source page, and reference type.
+type discoveredAsset struct {
+	normalizedURL string
+	host          string
+	isInternal    bool
+	sourceURLID   int64
+	refType       string // "script_src", "stylesheet_href", "font_preload", "icon_href", "video_src", "audio_src", "preload_href"
+}
+
 type parseResult struct {
 	fetchResult
 	page   *parser.ParseResult
 	edges  []crawl.DiscoveredEdge
 	issues []issues.DetectedIssue
 	images []discoveredImage
+	assets []discoveredAsset
 }
 
 type persistItem struct {
@@ -485,7 +495,7 @@ loop:
 
 	// --- Post-crawl: HEAD-check discovered image assets ---
 	if completionErr == nil {
-		e.headCheckImageAssets(ctx, jobID)
+		e.headCheckAssets(ctx, jobID)
 	}
 
 	// Update final counters
@@ -646,6 +656,53 @@ func (e *Engine) processParseResult(
 		})
 	}
 
+	// Collect discovered assets (scripts, stylesheets, fonts, etc.) for asset tracking
+	assetTypeToRef := map[string]string{
+		"script":     "script_src",
+		"stylesheet": "stylesheet_href",
+		"font":       "font_preload",
+		"icon":       "icon_href",
+		"video":      "video_src",
+		"audio":      "audio_src",
+		"preload":    "preload_href",
+	}
+	for _, asset := range page.Assets {
+		if asset.URL == "" {
+			continue
+		}
+		resolved := urlutil.ResolveReference(fr.result.FinalURL, asset.URL)
+		if resolved == "" {
+			continue
+		}
+		assetNorm, normErr := urlutil.Normalize(resolved)
+		if normErr != nil {
+			continue
+		}
+		if strings.HasPrefix(assetNorm, "data:") {
+			continue
+		}
+		assetParsed, parseErr := url.Parse(assetNorm)
+		if parseErr != nil {
+			continue
+		}
+		assetHost := assetParsed.Hostname()
+		assetInternal := false
+		if e.scopeChecker != nil {
+			assetInternal = e.scopeChecker.IsInScope(assetNorm)
+		}
+		refType := assetTypeToRef[asset.Type]
+		if refType == "" {
+			refType = "other"
+		}
+		pr.assets = append(pr.assets, discoveredAsset{
+			normalizedURL: assetNorm,
+			host:          assetHost,
+			isInternal:    assetInternal,
+			sourceURLID:   fr.urlID,
+			refType:       refType,
+		})
+	}
+
 	// Expand frontier with discovered in-scope links
 	for _, edge := range pr.edges {
 		if edge.RelationType != "link" {
@@ -722,49 +779,50 @@ func (e *Engine) processParseResult(
 }
 
 // persistItem saves a single crawl result to the database inside a single transaction.
-// headCheckImageAssets performs HEAD requests on all discovered image URLs
-// and stores the results in the assets table. Caps at 1000 unique images.
-func (e *Engine) headCheckImageAssets(ctx context.Context, jobID string) {
+// headCheckAssets performs HEAD requests on all discovered asset URLs
+// (images, scripts, stylesheets, fonts, media, etc.)
+// and stores the results in the assets table. Caps at 2000 unique assets.
+func (e *Engine) headCheckAssets(ctx context.Context, jobID string) {
 	// Query all distinct asset URLs from asset_references for this job
 	rows, err := e.db.Query(
 		`SELECT DISTINCT ar.asset_url_id, u.normalized_url
 		 FROM asset_references ar
 		 JOIN urls u ON u.id = ar.asset_url_id
 		 WHERE ar.job_id = ?
-		 LIMIT 1000`,
+		 LIMIT 2000`,
 		jobID,
 	)
 	if err != nil {
-		log.Printf("engine: failed to query image assets for HEAD checking: %v", err)
+		log.Printf("engine: failed to query assets for HEAD checking: %v", err)
 		return
 	}
 	defer rows.Close()
 
-	type imageTarget struct {
+	type assetTarget struct {
 		urlID int64
 		url   string
 	}
-	var targets []imageTarget
+	var targets []assetTarget
 	for rows.Next() {
-		var t imageTarget
+		var t assetTarget
 		if scanErr := rows.Scan(&t.urlID, &t.url); scanErr != nil {
 			continue
 		}
 		targets = append(targets, t)
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("engine: error iterating image assets: %v", err)
+		log.Printf("engine: error iterating assets: %v", err)
 	}
 
 	if len(targets) == 0 {
 		return
 	}
 
-	log.Printf("engine: HEAD-checking %d discovered image assets", len(targets))
+	log.Printf("engine: HEAD-checking %d discovered assets", len(targets))
 
 	// Use a small worker pool to avoid overwhelming hosts
 	const headWorkers = 4
-	work := make(chan imageTarget, len(targets))
+	work := make(chan assetTarget, len(targets))
 	for _, t := range targets {
 		work <- t
 	}
@@ -807,7 +865,7 @@ func (e *Engine) headCheckImageAssets(ctx context.Context, jobID string) {
 		}()
 	}
 	wg.Wait()
-	log.Printf("engine: completed HEAD-checking image assets")
+	log.Printf("engine: completed HEAD-checking assets")
 }
 
 func (e *Engine) persistItem(ctx context.Context, jobID string, item persistItem) error {
@@ -990,6 +1048,22 @@ func (e *Engine) persistItem(ctx context.Context, jobID string, item persistItem
 			`INSERT INTO asset_references (job_id, asset_url_id, source_page_url_id, reference_type)
 			 VALUES (?, ?, ?, ?)`,
 			jobID, imgURLID, img.sourceURLID, "img_src",
+		); refErr != nil {
+			// Duplicate references are possible; ignore unique constraint errors
+			continue
+		}
+	}
+
+	// --- Insert non-image asset references (scripts, stylesheets, fonts, etc.) ---
+	for _, asset := range item.assets {
+		assetURLID, upsertErr := txUpsertURL(tx, jobID, asset.normalizedURL, asset.host, "discovered", asset.isInternal, "asset")
+		if upsertErr != nil {
+			continue
+		}
+		if _, refErr := tx.ExecContext(ctx,
+			`INSERT INTO asset_references (job_id, asset_url_id, source_page_url_id, reference_type)
+			 VALUES (?, ?, ?, ?)`,
+			jobID, assetURLID, asset.sourceURLID, asset.refType,
 		); refErr != nil {
 			// Duplicate references are possible; ignore unique constraint errors
 			continue

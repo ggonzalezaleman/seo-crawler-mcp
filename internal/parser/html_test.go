@@ -334,6 +334,77 @@ func TestTitleInsideHead(t *testing.T) {
 	}
 }
 
+func TestAssetExtraction(t *testing.T) {
+	html := []byte(`<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Asset Test</title>
+<script src="/js/app.js"></script>
+<script src="/js/vendor.js"></script>
+<link rel="stylesheet" href="/css/main.css">
+<link rel="stylesheet" href="/css/theme.css">
+<link rel="preload" href="/fonts/roboto.woff2" as="font">
+<link rel="preload" href="/js/chunk.js" as="script">
+<link rel="icon" href="/favicon.ico">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+</head>
+<body>
+<video src="/video/intro.mp4"></video>
+<audio><source src="/audio/bg.mp3"></audio>
+<script src="data:text/javascript,void(0)"></script>
+</body>
+</html>`)
+
+	r, err := ParseHTML(html, "https://example.com/page", http.Header{})
+	if err != nil {
+		t.Fatalf("ParseHTML error: %v", err)
+	}
+
+	// Count by type
+	counts := map[string]int{}
+	for _, a := range r.Assets {
+		counts[a.Type]++
+	}
+
+	if counts["script"] != 2 {
+		t.Errorf("scripts = %d, want 2 (data: URL should be skipped)", counts["script"])
+	}
+	if counts["stylesheet"] != 2 {
+		t.Errorf("stylesheets = %d, want 2", counts["stylesheet"])
+	}
+	if counts["font"] != 1 {
+		t.Errorf("fonts = %d, want 1", counts["font"])
+	}
+	if counts["preload"] != 1 {
+		t.Errorf("preloads = %d, want 1", counts["preload"])
+	}
+	if counts["icon"] != 1 {
+		t.Errorf("icons = %d, want 1", counts["icon"])
+	}
+	if counts["video"] != 1 {
+		t.Errorf("videos = %d, want 1", counts["video"])
+	}
+	if counts["audio"] != 1 {
+		t.Errorf("audios = %d, want 1", counts["audio"])
+	}
+
+	// preconnect should NOT appear
+	for _, a := range r.Assets {
+		if a.URL == "https://fonts.googleapis.com" {
+			t.Error("preconnect URL should have been skipped")
+		}
+	}
+
+	// Verify URL resolution
+	for _, a := range r.Assets {
+		if a.Type == "script" && a.URL == "https://example.com/js/app.js" {
+			return // found resolved URL
+		}
+	}
+	t.Error("expected script URL to be resolved to absolute")
+}
+
 func TestMetaRobotsOutsideHead(t *testing.T) {
 	html := []byte(`<!DOCTYPE html>
 <html>

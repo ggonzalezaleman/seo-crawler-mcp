@@ -76,6 +76,12 @@ type DiscoveredImage struct {
 	AltMissing bool  `json:"altMissing"`
 }
 
+// DiscoveredAsset represents a non-image asset found in the page (script, stylesheet, etc.).
+type DiscoveredAsset struct {
+	URL  string `json:"url"`
+	Type string `json:"type"` // "script", "stylesheet", "font", "icon", "video", "audio", "preload", "other"
+}
+
 // ParseResult holds all extracted SEO data from an HTML page.
 type ParseResult struct {
 	Title                string
@@ -100,6 +106,7 @@ type ParseResult struct {
 	Images               []DiscoveredImage
 	ExtractedWordCount   int
 	MainContentWordCount int
+	Assets                 []DiscoveredAsset
 	ContentHash            string
 	JSSuspect              bool
 	ScriptCount            int
@@ -131,6 +138,7 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 		JSONLDTypes: make([]string, 0),
 		Links:      make([]DiscoveredLink, 0),
 		Images:     make([]DiscoveredImage, 0),
+		Assets:     make([]DiscoveredAsset, 0),
 	}
 	r.Headings = HeadingSet{
 		H1: make([]string, 0),
@@ -303,6 +311,103 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 		r.Images = append(r.Images, img)
 	})
 
+	// Assets: scripts
+	doc.Find("script[src]").Each(func(_ int, s *goquery.Selection) {
+		src, _ := s.Attr("src")
+		src = strings.TrimSpace(src)
+		if src == "" || shouldSkipAssetURL(src) {
+			return
+		}
+		r.Assets = append(r.Assets, DiscoveredAsset{
+			URL:  resolveURL(baseURL, src),
+			Type: "script",
+		})
+	})
+
+	// Assets: link elements (stylesheets, preloads, icons)
+	doc.Find("link").Each(func(_ int, s *goquery.Selection) {
+		rel := strings.ToLower(strings.TrimSpace(s.AttrOr("rel", "")))
+		href, hrefExists := s.Attr("href")
+		if !hrefExists {
+			return
+		}
+		href = strings.TrimSpace(href)
+		if href == "" || shouldSkipAssetURL(href) {
+			return
+		}
+
+		var assetType string
+		switch {
+		case rel == "stylesheet":
+			assetType = "stylesheet"
+		case rel == "icon" || rel == "shortcut icon" || rel == "apple-touch-icon":
+			assetType = "icon"
+		case rel == "preload":
+			as := strings.ToLower(strings.TrimSpace(s.AttrOr("as", "")))
+			switch as {
+			case "font":
+				assetType = "font"
+			default:
+				assetType = "preload"
+			}
+		case rel == "preconnect" || rel == "dns-prefetch":
+			return // skip, no URL to check
+		default:
+			return // skip other link types (canonical, alternate, etc.)
+		}
+
+		r.Assets = append(r.Assets, DiscoveredAsset{
+			URL:  resolveURL(baseURL, href),
+			Type: assetType,
+		})
+	})
+
+	// Assets: video
+	doc.Find("video").Each(func(_ int, s *goquery.Selection) {
+		if src, exists := s.Attr("src"); exists {
+			src = strings.TrimSpace(src)
+			if src != "" && !shouldSkipAssetURL(src) {
+				r.Assets = append(r.Assets, DiscoveredAsset{
+					URL:  resolveURL(baseURL, src),
+					Type: "video",
+				})
+			}
+		}
+		s.Find("source[src]").Each(func(_ int, source *goquery.Selection) {
+			src, _ := source.Attr("src")
+			src = strings.TrimSpace(src)
+			if src != "" && !shouldSkipAssetURL(src) {
+				r.Assets = append(r.Assets, DiscoveredAsset{
+					URL:  resolveURL(baseURL, src),
+					Type: "video",
+				})
+			}
+		})
+	})
+
+	// Assets: audio
+	doc.Find("audio").Each(func(_ int, s *goquery.Selection) {
+		if src, exists := s.Attr("src"); exists {
+			src = strings.TrimSpace(src)
+			if src != "" && !shouldSkipAssetURL(src) {
+				r.Assets = append(r.Assets, DiscoveredAsset{
+					URL:  resolveURL(baseURL, src),
+					Type: "audio",
+				})
+			}
+		}
+		s.Find("source[src]").Each(func(_ int, source *goquery.Selection) {
+			src, _ := source.Attr("src")
+			src = strings.TrimSpace(src)
+			if src != "" && !shouldSkipAssetURL(src) {
+				r.Assets = append(r.Assets, DiscoveredAsset{
+					URL:  resolveURL(baseURL, src),
+					Type: "audio",
+				})
+			}
+		})
+	})
+
 	// Script count + SPA root detection
 	r.ScriptCount = doc.Find("script").Length()
 	spaIDs := []string{"root", "__next", "app", "__nuxt"}
@@ -393,6 +498,18 @@ func metaProperty(doc *goquery.Document, property string) string {
 
 func metaName(doc *goquery.Document, name string) string {
 	return doc.Find(fmt.Sprintf(`meta[name="%s"]`, name)).AttrOr("content", "")
+}
+
+var skipAssetPrefixes = []string{"data:", "blob:", "javascript:"}
+
+func shouldSkipAssetURL(u string) bool {
+	lower := strings.ToLower(strings.TrimSpace(u))
+	for _, prefix := range skipAssetPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 var skipPrefixes = []string{"javascript:", "mailto:", "tel:", "data:", "blob:"}

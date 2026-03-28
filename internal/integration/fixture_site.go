@@ -240,6 +240,18 @@ func NewFixtureSite() *httptest.Server {
 		))
 	})
 
+	// ---- Script/CSS assets (serve minimal content for HEAD checks) ----
+	mux.HandleFunc("/js/app.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/javascript")
+		w.Header().Set("Content-Length", "512")
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/css/main.css", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/css")
+		w.Header().Set("Content-Length", "256")
+		w.WriteHeader(http.StatusOK)
+	})
+
 	// ---- Image assets (serve minimal content for HEAD checks) ----
 	for _, imgPath := range []string{"/images/photo1.jpg", "/images/photo2.png", "/images/photo3.gif"} {
 		path := imgPath
@@ -293,6 +305,8 @@ func wrapHTML(title, description, body, headExtra string) string {
 		sb.WriteString(headExtra)
 	}
 	sb.WriteString(`
+<script src="/js/app.js"></script>
+<link rel="stylesheet" href="/css/main.css">
 </head>
 <body>
 `)
