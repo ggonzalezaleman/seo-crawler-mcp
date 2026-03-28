@@ -343,6 +343,23 @@ const discoverTriggersJS = `
         '[aria-expanded="false"], details:not([open]) > summary'
     ).forEach(add);
 
+    // Text-based nav triggers: elements in header/nav whose text matches
+    // common menu labels that often hide sub-navigation behind a click.
+    const menuLabels = /^(services|products|solutions|resources|company|menu|more|explore)$/i;
+    document.querySelectorAll('header *, nav *, [role="navigation"] *').forEach(el => {
+        const text = el.textContent.trim();
+        if (menuLabels.test(text) && (el.tagName === 'BUTTON' || el.tagName === 'A' ||
+            el.tagName === 'SPAN' || el.tagName === 'DIV' || el.tagName === 'LI') &&
+            !el.href) {
+            add(el);
+        }
+    });
+
+    // Buttons with text "Menu" (common mobile hamburger label)
+    document.querySelectorAll('button').forEach(el => {
+        if (/^menu$/i.test(el.textContent.trim())) add(el);
+    });
+
     return result;
 })()
 `
