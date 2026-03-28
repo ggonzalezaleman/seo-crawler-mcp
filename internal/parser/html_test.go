@@ -1,0 +1,299 @@
+package parser
+
+import (
+	"net/http"
+	"os"
+	"testing"
+)
+
+func loadTestdata(t *testing.T, name string) []byte {
+	t.Helper()
+	data, err := os.ReadFile("../../testdata/" + name)
+	if err != nil {
+		t.Fatalf("loading testdata %q: %v", name, err)
+	}
+	return data
+}
+
+func TestParseBasicPage(t *testing.T) {
+	body := loadTestdata(t, "basic-page.html")
+	headers := http.Header{}
+
+	r, err := ParseHTML(body, "https://example.com/page", headers)
+	if err != nil {
+		t.Fatalf("ParseHTML error: %v", err)
+	}
+
+	// Title
+	if r.Title != "Test Page Title" {
+		t.Errorf("Title = %q, want %q", r.Title, "Test Page Title")
+	}
+	if r.TitleLength != 15 {
+		t.Errorf("TitleLength = %d, want 15", r.TitleLength)
+	}
+
+	// Meta description
+	if r.MetaDescription != "A test page description for SEO testing" {
+		t.Errorf("MetaDescription = %q", r.MetaDescription)
+	}
+
+	// Meta robots
+	if r.MetaRobots != "index, follow" {
+		t.Errorf("MetaRobots = %q", r.MetaRobots)
+	}
+
+	// Indexability
+	if r.IndexabilityState != "indexable" {
+		t.Errorf("IndexabilityState = %q, want indexable", r.IndexabilityState)
+	}
+
+	// Canonical
+	if r.CanonicalResolved != "https://example.com/page" {
+		t.Errorf("CanonicalResolved = %q", r.CanonicalResolved)
+	}
+	if r.CanonicalType != "self" {
+		t.Errorf("CanonicalType = %q, want self", r.CanonicalType)
+	}
+
+	// Rel next/prev
+	if r.RelNext == nil || r.RelNext.Resolved != "https://example.com/page2" {
+		t.Errorf("RelNext = %v", r.RelNext)
+	}
+	if r.RelPrev == nil || r.RelPrev.Resolved != "https://example.com/page0" {
+		t.Errorf("RelPrev = %v", r.RelPrev)
+	}
+
+	// Hreflang
+	if len(r.Hreflangs) != 2 {
+		t.Errorf("Hreflangs count = %d, want 2", len(r.Hreflangs))
+	}
+
+	// Headings
+	if len(r.Headings.H1) != 1 || r.Headings.H1[0] != "Main Heading" {
+		t.Errorf("H1 = %v", r.Headings.H1)
+	}
+	if len(r.Headings.H2) != 1 || r.Headings.H2[0] != "Sub Heading" {
+		t.Errorf("H2 = %v", r.Headings.H2)
+	}
+
+	// OG tags
+	if r.OpenGraph.Title != "OG Test Title" {
+		t.Errorf("OG Title = %q", r.OpenGraph.Title)
+	}
+
+	// Twitter
+	if r.TwitterCard.Card != "summary_large_image" {
+		t.Errorf("Twitter Card = %q", r.TwitterCard.Card)
+	}
+	if r.TwitterCard.Title != "Twitter Title" {
+		t.Errorf("Twitter Title = %q", r.TwitterCard.Title)
+	}
+
+	// JSON-LD
+	if len(r.JSONLDBlocks) != 1 {
+		t.Errorf("JSONLDBlocks count = %d, want 1", len(r.JSONLDBlocks))
+	}
+	if len(r.JSONLDTypes) != 1 || r.JSONLDTypes[0] != "WebPage" {
+		t.Errorf("JSONLDTypes = %v", r.JSONLDTypes)
+	}
+
+	// Links (should have nav1, about, external, footer-link = 4)
+	if len(r.Links) < 3 {
+		t.Errorf("Links count = %d, want >= 3", len(r.Links))
+	}
+
+	// Images
+	if len(r.Images) != 3 {
+		t.Errorf("Images count = %d, want 3", len(r.Images))
+	}
+
+	// Word count should be > 0
+	if r.ExtractedWordCount < 10 {
+		t.Errorf("ExtractedWordCount = %d, too low", r.ExtractedWordCount)
+	}
+
+	// Content hash should be set
+	if r.ContentHash == "" {
+		t.Error("ContentHash is empty")
+	}
+
+	// Not JS suspect (has content)
+	if r.JSSuspect {
+		t.Error("JSSuspect should be false for basic page")
+	}
+}
+
+func TestParseMissingMeta(t *testing.T) {
+	body := loadTestdata(t, "missing-meta.html")
+	headers := http.Header{}
+
+	r, err := ParseHTML(body, "https://example.com/minimal", headers)
+	if err != nil {
+		t.Fatalf("ParseHTML error: %v", err)
+	}
+
+	if r.Title != "" {
+		t.Errorf("Title = %q, want empty", r.Title)
+	}
+	if r.MetaDescription != "" {
+		t.Errorf("MetaDescription = %q, want empty", r.MetaDescription)
+	}
+	if r.CanonicalType != "absent" {
+		t.Errorf("CanonicalType = %q, want absent", r.CanonicalType)
+	}
+	if r.IndexabilityState != "indexable" {
+		t.Errorf("IndexabilityState = %q, want indexable", r.IndexabilityState)
+	}
+}
+
+func TestParseSPAStub(t *testing.T) {
+	body := loadTestdata(t, "spa-stub.html")
+	headers := http.Header{}
+
+	r, err := ParseHTML(body, "https://example.com/app", headers)
+	if err != nil {
+		t.Fatalf("ParseHTML error: %v", err)
+	}
+
+	if !r.JSSuspect {
+		t.Error("JSSuspect should be true for SPA stub")
+	}
+	if !r.HasSPARoot {
+		t.Error("HasSPARoot should be true")
+	}
+	if r.ScriptCount != 6 {
+		t.Errorf("ScriptCount = %d, want 6", r.ScriptCount)
+	}
+	if r.ExtractedWordCount >= 50 {
+		t.Errorf("ExtractedWordCount = %d, should be < 50", r.ExtractedWordCount)
+	}
+}
+
+func TestCanonicalType(t *testing.T) {
+	tests := []struct {
+		name      string
+		html      string
+		pageURL   string
+		wantType  string
+	}{
+		{
+			name:     "self",
+			html:     `<html><head><link rel="canonical" href="https://example.com/page"></head><body></body></html>`,
+			pageURL:  "https://example.com/page",
+			wantType: "self",
+		},
+		{
+			name:     "cross",
+			html:     `<html><head><link rel="canonical" href="https://example.com/other"></head><body></body></html>`,
+			pageURL:  "https://example.com/page",
+			wantType: "cross",
+		},
+		{
+			name:     "absent",
+			html:     `<html><head></head><body></body></html>`,
+			pageURL:  "https://example.com/page",
+			wantType: "absent",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, err := ParseHTML([]byte(tt.html), tt.pageURL, http.Header{})
+			if err != nil {
+				t.Fatalf("ParseHTML error: %v", err)
+			}
+			if r.CanonicalType != tt.wantType {
+				t.Errorf("CanonicalType = %q, want %q", r.CanonicalType, tt.wantType)
+			}
+		})
+	}
+}
+
+func TestJSONLDExtraction(t *testing.T) {
+	html := `<html><head>
+		<script type="application/ld+json">{"@type": "Organization", "name": "Test"}</script>
+		<script type="application/ld+json">{"@type": "WebSite", "url": "https://example.com"}</script>
+	</head><body></body></html>`
+
+	r, err := ParseHTML([]byte(html), "https://example.com", http.Header{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(r.JSONLDBlocks) != 2 {
+		t.Errorf("JSONLDBlocks = %d, want 2", len(r.JSONLDBlocks))
+	}
+	if len(r.JSONLDTypes) != 2 {
+		t.Errorf("JSONLDTypes = %d, want 2", len(r.JSONLDTypes))
+	}
+	if r.JSONLDTypes[0] != "Organization" {
+		t.Errorf("type[0] = %q", r.JSONLDTypes[0])
+	}
+	if r.JSONLDTypes[1] != "WebSite" {
+		t.Errorf("type[1] = %q", r.JSONLDTypes[1])
+	}
+}
+
+func TestJSONLDMalformed(t *testing.T) {
+	html := `<html><head>
+		<script type="application/ld+json">{invalid json}</script>
+	</head><body></body></html>`
+
+	r, err := ParseHTML([]byte(html), "https://example.com", http.Header{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(r.JSONLDBlocks) != 1 {
+		t.Fatalf("blocks = %d, want 1", len(r.JSONLDBlocks))
+	}
+	if !r.JSONLDBlocks[0].Malformed {
+		t.Error("expected malformed=true")
+	}
+}
+
+func TestHreflangExtraction(t *testing.T) {
+	html := `<html><head>
+		<link rel="alternate" hreflang="en" href="https://example.com/en">
+		<link rel="alternate" hreflang="es" href="https://example.com/es">
+		<link rel="alternate" hreflang="x-default" href="https://example.com/">
+	</head><body></body></html>`
+
+	r, err := ParseHTML([]byte(html), "https://example.com/en", http.Header{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(r.Hreflangs) != 3 {
+		t.Fatalf("Hreflangs = %d, want 3", len(r.Hreflangs))
+	}
+	if r.Hreflangs[0].Lang != "en" {
+		t.Errorf("lang[0] = %q", r.Hreflangs[0].Lang)
+	}
+	if r.Hreflangs[2].Lang != "x-default" {
+		t.Errorf("lang[2] = %q", r.Hreflangs[2].Lang)
+	}
+}
+
+func TestNoindexMeta(t *testing.T) {
+	html := `<html><head><meta name="robots" content="noindex, follow"></head><body></body></html>`
+	r, err := ParseHTML([]byte(html), "https://example.com", http.Header{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.IndexabilityState != "noindex_meta" {
+		t.Errorf("IndexabilityState = %q, want noindex_meta", r.IndexabilityState)
+	}
+}
+
+func TestNoindexHeader(t *testing.T) {
+	html := `<html><head></head><body></body></html>`
+	headers := http.Header{"X-Robots-Tag": []string{"noindex"}}
+	r, err := ParseHTML([]byte(html), "https://example.com", headers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.IndexabilityState != "noindex_header" {
+		t.Errorf("IndexabilityState = %q, want noindex_header", r.IndexabilityState)
+	}
+}
