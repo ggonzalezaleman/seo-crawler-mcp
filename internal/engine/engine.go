@@ -588,9 +588,11 @@ func (e *Engine) processParseResult(
 		MainContentWordCount: page.MainContentWordCount,
 		ImagesWithoutAlt:     countImagesWithoutAlt(page.Images),
 		ImagesWithEmptyAlt:   countImagesWithEmptyAlt(page.Images),
-		JSSuspect:            page.JSSuspect,
-		ScriptCount:          page.ScriptCount,
-		HasSPARoot:           page.HasSPARoot,
+		JSSuspect:             page.JSSuspect,
+		ScriptCount:           page.ScriptCount,
+		HasSPARoot:            page.HasSPARoot,
+		TitleOutsideHead:      page.TitleOutsideHead,
+		MetaRobotsOutsideHead: page.MetaRobotsOutsideHead,
 	}
 	pr.issues = issues.DetectPageLocalIssues(pageCtx, thresholds, fr.depth)
 

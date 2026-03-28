@@ -186,6 +186,18 @@ var Explanations = map[string]IssueExplanation{
 		Impact:      "Deep pages get crawled less frequently and may be perceived as less important by search engines.",
 		Fix:         "Reduce crawl depth by adding internal links from higher-level pages or improving site navigation.",
 	},
+	"title_outside_head": {
+		Title:       "Title Outside <head>",
+		Description: "The <title> element appears outside the <head> section, likely inside <body>.",
+		Impact:      "Search engines may ignore the title if it's not in <head>. Google often still recognizes it, but this should not be relied upon.",
+		Fix:         "Move the <title> element into the <head> section of the HTML document.",
+	},
+	"meta_robots_outside_head": {
+		Title:       "Meta Robots Outside <head>",
+		Description: "A <meta name=\"robots\"> tag appears outside the <head> section.",
+		Impact:      "Search engines may ignore robots directives outside <head>. Critical directives like noindex could be missed.",
+		Fix:         "Move the <meta name=\"robots\"> tag into the <head> section of the HTML document.",
+	},
 	"js_suspect_not_rendered": {
 		Title:       "Suspected JavaScript-Rendered Content",
 		Description: "This page appears to rely heavily on JavaScript for rendering its main content.",

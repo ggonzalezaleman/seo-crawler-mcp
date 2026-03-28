@@ -534,3 +534,32 @@ func TestDetectPageLocalIssues_IncompleteStructuredData(t *testing.T) {
 		t.Error("unexpected invalid_structured_data — Organization has all required fields")
 	}
 }
+
+func TestTitleOutsideHeadIssue(t *testing.T) {
+	ctx := cleanPage()
+	ctx.TitleOutsideHead = true
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 0)
+	if !hasIssue(issues, "title_outside_head") {
+		t.Error("expected title_outside_head issue")
+	}
+}
+
+func TestMetaRobotsOutsideHeadIssue(t *testing.T) {
+	ctx := cleanPage()
+	ctx.MetaRobotsOutsideHead = true
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 0)
+	if !hasIssue(issues, "meta_robots_outside_head") {
+		t.Error("expected meta_robots_outside_head issue")
+	}
+}
+
+func TestNoOutsideHeadIssuesOnCleanPage(t *testing.T) {
+	ctx := cleanPage()
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 0)
+	if hasIssue(issues, "title_outside_head") {
+		t.Error("unexpected title_outside_head on clean page")
+	}
+	if hasIssue(issues, "meta_robots_outside_head") {
+		t.Error("unexpected meta_robots_outside_head on clean page")
+	}
+}

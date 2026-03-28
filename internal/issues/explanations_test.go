@@ -40,6 +40,8 @@ var allKnownIssueTypes = []string{
 	"deep_page",
 	"robots_meta_header_mismatch",
 	"js_suspect_not_rendered",
+	"title_outside_head",
+	"meta_robots_outside_head",
 
 	// Global (DetectGlobalIssues)
 	"duplicate_title",

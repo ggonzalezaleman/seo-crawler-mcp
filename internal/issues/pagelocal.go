@@ -46,10 +46,12 @@ type PageContext struct {
 	MainContentWordCount int
 	ImagesWithoutAlt     int
 	ImagesWithEmptyAlt   int
-	MixedContent         bool
-	JSSuspect            bool
-	ScriptCount          int
-	HasSPARoot           bool
+	MixedContent           bool
+	JSSuspect              bool
+	ScriptCount            int
+	HasSPARoot             bool
+	TitleOutsideHead       bool
+	MetaRobotsOutsideHead  bool
 }
 
 // Thresholds holds configurable limits for issue detection.
@@ -258,6 +260,14 @@ func DetectPageLocalIssues(ctx PageContext, thresholds Thresholds, depth int) []
 	// JS Rendering
 	if ctx.JSSuspect {
 		issues = append(issues, newIssue("js_suspect_not_rendered", "info", map[string]any{}))
+	}
+
+	// Tags outside <head>
+	if ctx.TitleOutsideHead {
+		issues = append(issues, newIssue("title_outside_head", "warning", map[string]any{}))
+	}
+	if ctx.MetaRobotsOutsideHead {
+		issues = append(issues, newIssue("meta_robots_outside_head", "warning", map[string]any{}))
 	}
 
 	return issues

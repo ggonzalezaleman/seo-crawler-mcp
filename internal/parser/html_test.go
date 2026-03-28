@@ -297,3 +297,57 @@ func TestNoindexHeader(t *testing.T) {
 		t.Errorf("IndexabilityState = %q, want noindex_header", r.IndexabilityState)
 	}
 }
+
+func TestTitleOutsideHead(t *testing.T) {
+	html := []byte(`<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body>
+<title>Wrong Place Title</title>
+<p>Hello</p>
+</body>
+</html>`)
+	r, err := ParseHTML(html, "https://example.com/", http.Header{})
+	if err != nil {
+		t.Fatalf("ParseHTML error: %v", err)
+	}
+	if !r.TitleOutsideHead {
+		t.Error("TitleOutsideHead = false, want true")
+	}
+}
+
+func TestTitleInsideHead(t *testing.T) {
+	html := []byte(`<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Correct Title</title>
+</head>
+<body><p>Hello</p></body>
+</html>`)
+	r, err := ParseHTML(html, "https://example.com/", http.Header{})
+	if err != nil {
+		t.Fatalf("ParseHTML error: %v", err)
+	}
+	if r.TitleOutsideHead {
+		t.Error("TitleOutsideHead = true, want false")
+	}
+}
+
+func TestMetaRobotsOutsideHead(t *testing.T) {
+	html := []byte(`<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Test</title></head>
+<body>
+<meta name="robots" content="noindex">
+<p>Hello</p>
+</body>
+</html>`)
+	r, err := ParseHTML(html, "https://example.com/", http.Header{})
+	if err != nil {
+		t.Fatalf("ParseHTML error: %v", err)
+	}
+	if !r.MetaRobotsOutsideHead {
+		t.Error("MetaRobotsOutsideHead = false, want true")
+	}
+}

@@ -100,10 +100,12 @@ type ParseResult struct {
 	Images               []DiscoveredImage
 	ExtractedWordCount   int
 	MainContentWordCount int
-	ContentHash          string
-	JSSuspect            bool
-	ScriptCount          int
-	HasSPARoot           bool
+	ContentHash            string
+	JSSuspect              bool
+	ScriptCount            int
+	HasSPARoot             bool
+	TitleOutsideHead       bool
+	MetaRobotsOutsideHead  bool
 }
 
 // ParseHTML extracts SEO metadata from raw HTML bytes.
@@ -324,6 +326,16 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 
 	// JS suspect
 	r.JSSuspect = r.ExtractedWordCount < 50 && (r.HasSPARoot || r.ScriptCount >= 5)
+
+	// Detect title outside <head> (inside <body>)
+	doc.Find("body title").Each(func(_ int, s *goquery.Selection) {
+		r.TitleOutsideHead = true
+	})
+
+	// Detect meta robots outside <head> (inside <body>)
+	doc.Find("body meta[name='robots']").Each(func(_ int, s *goquery.Selection) {
+		r.MetaRobotsOutsideHead = true
+	})
 
 	return r, nil
 }
