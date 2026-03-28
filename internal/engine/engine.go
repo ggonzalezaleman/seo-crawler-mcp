@@ -513,6 +513,25 @@ loop:
 		e.headCheckAssets(ctx, jobID)
 	}
 
+	// --- Post-crawl: recalculate inbound/outbound edge counts on pages ---
+	if completionErr == nil {
+		e.db.Exec(`
+			UPDATE pages SET inbound_edge_count = (
+				SELECT COUNT(*) FROM edges e
+				WHERE e.job_id = pages.job_id
+				  AND e.declared_target_url = (SELECT normalized_url FROM urls WHERE id = pages.url_id AND job_id = pages.job_id)
+				  AND e.is_internal = 1 AND e.relation_type = 'link'
+			) WHERE job_id = ?`, jobID)
+		e.db.Exec(`
+			UPDATE pages SET outbound_edge_count = (
+				SELECT COUNT(*) FROM edges e
+				WHERE e.job_id = pages.job_id
+				  AND e.source_url_id = pages.url_id
+				  AND e.is_internal = 1 AND e.relation_type = 'link'
+			) WHERE job_id = ?`, jobID)
+		log.Printf("engine: recalculated edge counts for job %s", jobID)
+	}
+
 	// --- Post-crawl: global issue detection + materialization ---
 	if completionErr == nil {
 		globalCfg := issues.DefaultGlobalConfig()
