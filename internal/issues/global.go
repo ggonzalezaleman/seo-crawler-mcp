@@ -1,0 +1,881 @@
+// Package issues provides SEO issue detection for crawled pages.
+package issues
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
+)
+
+// GlobalConfig holds thresholds for global issue detection.
+type GlobalConfig struct {
+	ThinContentThreshold int
+	DeepPageThreshold    int
+}
+
+// DefaultGlobalConfig returns sensible defaults for global issue detection.
+func DefaultGlobalConfig() GlobalConfig {
+	return GlobalConfig{
+		ThinContentThreshold: 200,
+		DeepPageThreshold:    3,
+	}
+}
+
+// DetectGlobalIssues runs all Phase 2 (global) issue detectors against a completed crawl job.
+// Returns the total number of new issues inserted.
+func DetectGlobalIssues(db *storage.DB, jobID string, cfg GlobalConfig) (int, error) {
+	detectors := []func(*storage.DB, string, GlobalConfig) (int, error){
+		detectDuplicateTitles,
+		detectDuplicateDescriptions,
+		detectDuplicateContent,
+		detectOrphanPages,
+		detectDeepPages,
+		detectHreflangNotReciprocal,
+		detectBrokenHreflangTarget,
+		detectCanonicalToNon200,
+		detectCanonicalChain,
+		detectCanonicalToRedirect,
+		detectBrokenPaginationChain,
+		detectPaginationCanonicalMismatch,
+		detectSitemapNon200,
+		detectCrawledNotInSitemap,
+		detectInSitemapNotCrawled,
+		detectInSitemapRobotsBlocked,
+		detectHTTPToHTTPSMissing,
+	}
+
+	var total int
+	for _, detector := range detectors {
+		count, err := detector(db, jobID, cfg)
+		if err != nil {
+			return total, err
+		}
+		total += count
+	}
+
+	return total, nil
+}
+
+func insertGlobalIssue(db *storage.DB, jobID string, urlID *int64, issueType, severity string, details map[string]any) error {
+	detailsBytes, err := json.Marshal(details)
+	if err != nil {
+		return fmt.Errorf("marshaling details for %q: %w", issueType, err)
+	}
+	detailsJSON := string(detailsBytes)
+	_, err = db.InsertIssue(storage.IssueInput{
+		JobID:       jobID,
+		URLID:       urlID,
+		IssueType:   issueType,
+		Severity:    severity,
+		Scope:       "global",
+		DetailsJSON: &detailsJSON,
+	})
+	if err != nil {
+		return fmt.Errorf("inserting global issue %q: %w", issueType, err)
+	}
+	return nil
+}
+
+type duplicateGroup struct {
+	value     string
+	urlIDs    []int64
+	fetchSeqs []int64
+}
+
+func queryDuplicateGroups(db *storage.DB, jobID, field string) ([]duplicateGroup, error) {
+	query := fmt.Sprintf(`
+		SELECT p.%s, GROUP_CONCAT(p.url_id), GROUP_CONCAT(f.fetch_seq)
+		FROM pages p
+		JOIN fetches f ON f.id = p.fetch_id
+		WHERE p.job_id = ? AND p.%s IS NOT NULL AND p.%s != ''
+		GROUP BY p.%s
+		HAVING COUNT(*) > 1
+	`, field, field, field, field)
+
+	rows, err := db.Query(query, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("querying duplicate groups for %q: %w", field, err)
+	}
+	defer rows.Close()
+
+	groups := []duplicateGroup{}
+	for rows.Next() {
+		var group duplicateGroup
+		var urlIDsRaw string
+		var fetchSeqsRaw string
+		if err := rows.Scan(&group.value, &urlIDsRaw, &fetchSeqsRaw); err != nil {
+			return nil, fmt.Errorf("scanning duplicate group for %q: %w", field, err)
+		}
+		group.urlIDs = parseInt64List(urlIDsRaw)
+		group.fetchSeqs = parseInt64List(fetchSeqsRaw)
+		groups = append(groups, group)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating duplicate groups for %q: %w", field, err)
+	}
+
+	return groups, nil
+}
+
+func detectDuplicateTitles(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	return detectDuplicateField(db, jobID, "title", "duplicate_title", "warning", "value")
+}
+
+func detectDuplicateDescriptions(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	return detectDuplicateField(db, jobID, "meta_description", "duplicate_description", "warning", "value")
+}
+
+func detectDuplicateContent(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	return detectDuplicateField(db, jobID, "content_hash", "duplicate_content", "warning", "contentHash")
+}
+
+func detectDuplicateField(db *storage.DB, jobID, field, issueType, severity, detailKey string) (int, error) {
+	groups, err := queryDuplicateGroups(db, jobID, field)
+	if err != nil {
+		return 0, err
+	}
+
+	var total int
+	for _, group := range groups {
+		canonicalIndex := minIndex(group.fetchSeqs)
+		for idx, urlID := range group.urlIDs {
+			if idx == canonicalIndex {
+				continue
+			}
+			details := map[string]any{
+				detailKey:   group.value,
+				"groupSize": len(group.urlIDs),
+			}
+			if err := insertGlobalIssue(db, jobID, &urlID, issueType, severity, details); err != nil {
+				return total, err
+			}
+			total++
+		}
+	}
+
+	return total, nil
+}
+
+func detectOrphanPages(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT p.url_id
+		FROM pages p
+		JOIN urls u ON u.id = p.url_id AND u.job_id = p.job_id
+		WHERE p.job_id = ? AND p.inbound_edge_count = 0 AND u.discovered_via != 'seed'
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying orphan pages: %w", err)
+	}
+	defer rows.Close()
+
+	urlIDs := []int64{}
+	for rows.Next() {
+		var urlID int64
+		if err := rows.Scan(&urlID); err != nil {
+			return 0, fmt.Errorf("scanning orphan page: %w", err)
+		}
+		urlIDs = append(urlIDs, urlID)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating orphan pages: %w", err)
+	}
+
+	for _, urlID := range urlIDs {
+		if err := insertGlobalIssue(db, jobID, &urlID, "orphan_page", "warning", map[string]any{}); err != nil {
+			return 0, err
+		}
+	}
+
+	return len(urlIDs), nil
+}
+
+func detectDeepPages(db *storage.DB, jobID string, cfg GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT p.url_id, p.depth
+		FROM pages p
+		WHERE p.job_id = ? AND p.depth > ?
+	`, jobID, cfg.DeepPageThreshold)
+	if err != nil {
+		return 0, fmt.Errorf("querying deep pages: %w", err)
+	}
+	defer rows.Close()
+
+	type deepPage struct {
+		urlID int64
+		depth int
+	}
+	pages := []deepPage{}
+	for rows.Next() {
+		var page deepPage
+		if err := rows.Scan(&page.urlID, &page.depth); err != nil {
+			return 0, fmt.Errorf("scanning deep page: %w", err)
+		}
+		pages = append(pages, page)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating deep pages: %w", err)
+	}
+
+	var total int
+	for _, page := range pages {
+		var exists int
+		if err := db.QueryRow(
+			`SELECT COUNT(*) FROM issues WHERE job_id = ? AND url_id = ? AND issue_type = 'deep_page'`,
+			jobID,
+			page.urlID,
+		).Scan(&exists); err != nil {
+			return total, fmt.Errorf("checking existing deep_page issue: %w", err)
+		}
+		if exists > 0 {
+			continue
+		}
+		if err := insertGlobalIssue(db, jobID, &page.urlID, "deep_page", "info", map[string]any{
+			"depth":     page.depth,
+			"threshold": cfg.DeepPageThreshold,
+		}); err != nil {
+			return total, err
+		}
+		total++
+	}
+
+	return total, nil
+}
+
+type hreflangEntry struct {
+	Lang string `json:"lang"`
+	URL  string `json:"url"`
+}
+
+func detectHreflangNotReciprocal(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT p.url_id, u.normalized_url, p.hreflang_json
+		FROM pages p
+		JOIN urls u ON u.id = p.url_id AND u.job_id = p.job_id
+		WHERE p.job_id = ? AND p.hreflang_json IS NOT NULL AND p.hreflang_json != '' AND p.hreflang_json != '[]'
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying hreflang pages: %w", err)
+	}
+	defer rows.Close()
+
+	type hreflangPage struct {
+		urlID   int64
+		url     string
+		targets []string
+	}
+	pages := []hreflangPage{}
+	targetMap := map[string]map[string]bool{}
+	urlToID := map[string]int64{}
+
+	for rows.Next() {
+		var page hreflangPage
+		var hreflangJSON string
+		if err := rows.Scan(&page.urlID, &page.url, &hreflangJSON); err != nil {
+			return 0, fmt.Errorf("scanning hreflang page: %w", err)
+		}
+
+		var entries []hreflangEntry
+		if err := json.Unmarshal([]byte(hreflangJSON), &entries); err != nil {
+			continue
+		}
+
+		page.targets = []string{}
+		for _, entry := range entries {
+			page.targets = append(page.targets, entry.URL)
+		}
+		pages = append(pages, page)
+		urlToID[page.url] = page.urlID
+		if targetMap[page.url] == nil {
+			targetMap[page.url] = map[string]bool{}
+		}
+		for _, target := range page.targets {
+			targetMap[page.url][target] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating hreflang pages: %w", err)
+	}
+
+	type issueRow struct {
+		urlID     int64
+		sourceURL string
+		targetURL string
+	}
+	issues := []issueRow{}
+	seen := map[string]bool{}
+	for _, page := range pages {
+		for _, targetURL := range page.targets {
+			if targetURL == page.url {
+				continue
+			}
+			key := page.url + "|" + targetURL
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			if targetMap[targetURL] != nil && targetMap[targetURL][page.url] {
+				continue
+			}
+			issues = append(issues, issueRow{urlID: page.urlID, sourceURL: page.url, targetURL: targetURL})
+		}
+	}
+
+	for _, issue := range issues {
+		if err := insertGlobalIssue(db, jobID, &issue.urlID, "hreflang_not_reciprocal", "warning", map[string]any{
+			"sourceUrl": issue.sourceURL,
+			"targetUrl": issue.targetURL,
+		}); err != nil {
+			return 0, err
+		}
+	}
+
+	return len(issues), nil
+}
+
+func detectBrokenHreflangTarget(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT p.url_id, p.hreflang_json
+		FROM pages p
+		WHERE p.job_id = ? AND p.hreflang_json IS NOT NULL AND p.hreflang_json != '' AND p.hreflang_json != '[]'
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying hreflang targets: %w", err)
+	}
+	defer rows.Close()
+
+	type targetCheck struct {
+		urlID     int64
+		targetURL string
+	}
+	checks := []targetCheck{}
+	for rows.Next() {
+		var urlID int64
+		var hreflangJSON string
+		if err := rows.Scan(&urlID, &hreflangJSON); err != nil {
+			return 0, fmt.Errorf("scanning hreflang target row: %w", err)
+		}
+		var entries []hreflangEntry
+		if err := json.Unmarshal([]byte(hreflangJSON), &entries); err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			checks = append(checks, targetCheck{urlID: urlID, targetURL: entry.URL})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating hreflang targets: %w", err)
+	}
+
+	var total int
+	seen := map[string]bool{}
+	for _, check := range checks {
+		key := fmt.Sprintf("%d|%s", check.urlID, check.targetURL)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+
+		var statusCode int
+		err := db.QueryRow(`
+			SELECT f.status_code
+			FROM urls u
+			JOIN fetches f ON f.requested_url_id = u.id AND f.job_id = u.job_id
+			WHERE u.job_id = ? AND u.normalized_url = ? AND f.status_code IS NOT NULL
+			ORDER BY f.fetch_seq DESC LIMIT 1
+		`, jobID, check.targetURL).Scan(&statusCode)
+		if err != nil {
+			continue
+		}
+		if statusCode == 200 {
+			continue
+		}
+
+		if err := insertGlobalIssue(db, jobID, &check.urlID, "broken_hreflang_target", "error", map[string]any{
+			"targetUrl":  check.targetURL,
+			"statusCode": statusCode,
+		}); err != nil {
+			return total, err
+		}
+		total++
+	}
+
+	return total, nil
+}
+
+func detectCanonicalToNon200(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT p.url_id, p.canonical_url, p.canonical_status_code
+		FROM pages p
+		WHERE p.job_id = ?
+			AND p.canonical_url IS NOT NULL AND p.canonical_url != ''
+			AND p.canonical_status_code IS NOT NULL AND p.canonical_status_code != 200
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying canonical_to_non_200: %w", err)
+	}
+	defer rows.Close()
+
+	type candidate struct {
+		urlID        int64
+		canonicalURL string
+		statusCode   int
+	}
+	candidates := []candidate{}
+	for rows.Next() {
+		var c candidate
+		if err := rows.Scan(&c.urlID, &c.canonicalURL, &c.statusCode); err != nil {
+			return 0, fmt.Errorf("scanning canonical_to_non_200: %w", err)
+		}
+		candidates = append(candidates, c)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating canonical_to_non_200: %w", err)
+	}
+
+	for _, c := range candidates {
+		if err := insertGlobalIssue(db, jobID, &c.urlID, "canonical_to_non_200", "error", map[string]any{
+			"canonicalUrl": c.canonicalURL,
+			"statusCode":   c.statusCode,
+		}); err != nil {
+			return 0, err
+		}
+	}
+
+	return len(candidates), nil
+}
+
+func detectCanonicalChain(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT p1.url_id, p1.canonical_url, p2.canonical_url
+		FROM pages p1
+		JOIN urls u2 ON u2.job_id = p1.job_id AND u2.normalized_url = p1.canonical_url
+		JOIN pages p2 ON p2.job_id = p1.job_id AND p2.url_id = u2.id
+		JOIN urls u1 ON u1.job_id = p1.job_id AND u1.id = p1.url_id
+		WHERE p1.job_id = ?
+			AND p1.canonical_url IS NOT NULL AND p1.canonical_url != ''
+			AND p2.canonical_url IS NOT NULL AND p2.canonical_url != ''
+			AND p1.canonical_url != u1.normalized_url
+			AND p2.canonical_url != p1.canonical_url
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying canonical_chain: %w", err)
+	}
+	defer rows.Close()
+
+	type chain struct {
+		urlID              int64
+		canonicalURL       string
+		targetCanonicalURL string
+	}
+	chains := []chain{}
+	for rows.Next() {
+		var c chain
+		if err := rows.Scan(&c.urlID, &c.canonicalURL, &c.targetCanonicalURL); err != nil {
+			return 0, fmt.Errorf("scanning canonical_chain: %w", err)
+		}
+		chains = append(chains, c)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating canonical_chain: %w", err)
+	}
+
+	for _, c := range chains {
+		if err := insertGlobalIssue(db, jobID, &c.urlID, "canonical_chain", "warning", map[string]any{
+			"canonicalUrl":       c.canonicalURL,
+			"targetCanonicalUrl": c.targetCanonicalURL,
+		}); err != nil {
+			return 0, err
+		}
+	}
+
+	return len(chains), nil
+}
+
+func detectCanonicalToRedirect(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT p.url_id, p.canonical_url, p.canonical_status_code
+		FROM pages p
+		WHERE p.job_id = ?
+			AND p.canonical_url IS NOT NULL AND p.canonical_url != ''
+			AND p.canonical_status_code IN (301, 302, 307, 308)
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying canonical_to_redirect: %w", err)
+	}
+	defer rows.Close()
+
+	type redirect struct {
+		urlID        int64
+		canonicalURL string
+		statusCode   int
+	}
+	redirects := []redirect{}
+	for rows.Next() {
+		var redirect redirect
+		if err := rows.Scan(&redirect.urlID, &redirect.canonicalURL, &redirect.statusCode); err != nil {
+			return 0, fmt.Errorf("scanning canonical_to_redirect: %w", err)
+		}
+		redirects = append(redirects, redirect)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating canonical_to_redirect: %w", err)
+	}
+
+	for _, redirect := range redirects {
+		if err := insertGlobalIssue(db, jobID, &redirect.urlID, "canonical_to_redirect", "warning", map[string]any{
+			"canonicalUrl": redirect.canonicalURL,
+			"statusCode":   redirect.statusCode,
+		}); err != nil {
+			return 0, err
+		}
+	}
+
+	return len(redirects), nil
+}
+
+func detectBrokenPaginationChain(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	type paginationEdge struct {
+		urlID     int64
+		targetURL string
+		relType   string
+	}
+	edges := []paginationEdge{}
+
+	for _, relation := range []struct {
+		column  string
+		relType string
+	}{
+		{column: "rel_next_url", relType: "next"},
+		{column: "rel_prev_url", relType: "prev"},
+	} {
+		query := fmt.Sprintf(`
+			SELECT p.url_id, p.%s
+			FROM pages p
+			WHERE p.job_id = ? AND p.%s IS NOT NULL AND p.%s != ''
+		`, relation.column, relation.column, relation.column)
+		rows, err := db.Query(query, jobID)
+		if err != nil {
+			return 0, fmt.Errorf("querying %s pagination edges: %w", relation.relType, err)
+		}
+
+		for rows.Next() {
+			var edge paginationEdge
+			edge.relType = relation.relType
+			if err := rows.Scan(&edge.urlID, &edge.targetURL); err != nil {
+				rows.Close()
+				return 0, fmt.Errorf("scanning %s pagination edge: %w", relation.relType, err)
+			}
+			edges = append(edges, edge)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("iterating %s pagination edges: %w", relation.relType, err)
+		}
+		rows.Close()
+	}
+
+	var total int
+	for _, edge := range edges {
+		var statusCode int
+		err := db.QueryRow(`
+			SELECT f.status_code
+			FROM urls u
+			JOIN fetches f ON f.requested_url_id = u.id AND f.job_id = u.job_id
+			WHERE u.job_id = ? AND u.normalized_url = ? AND f.status_code IS NOT NULL
+			ORDER BY f.fetch_seq DESC LIMIT 1
+		`, jobID, edge.targetURL).Scan(&statusCode)
+		if err != nil {
+			continue
+		}
+		if statusCode == 200 {
+			continue
+		}
+		if err := insertGlobalIssue(db, jobID, &edge.urlID, "broken_pagination_chain", "warning", map[string]any{
+			"targetUrl":  edge.targetURL,
+			"statusCode": statusCode,
+			"relType":    edge.relType,
+		}); err != nil {
+			return total, err
+		}
+		total++
+	}
+
+	return total, nil
+}
+
+func detectPaginationCanonicalMismatch(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT p.url_id, p.canonical_url, u.normalized_url
+		FROM pages p
+		JOIN urls u ON u.id = p.url_id AND u.job_id = p.job_id
+		WHERE p.job_id = ?
+			AND (p.rel_next_url IS NOT NULL OR p.rel_prev_url IS NOT NULL)
+			AND p.canonical_url IS NOT NULL AND p.canonical_url != ''
+			AND p.canonical_url != u.normalized_url
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying pagination_canonical_mismatch: %w", err)
+	}
+	defer rows.Close()
+
+	type mismatch struct {
+		urlID        int64
+		canonicalURL string
+		pageURL      string
+	}
+	mismatches := []mismatch{}
+	for rows.Next() {
+		var mismatch mismatch
+		if err := rows.Scan(&mismatch.urlID, &mismatch.canonicalURL, &mismatch.pageURL); err != nil {
+			return 0, fmt.Errorf("scanning pagination_canonical_mismatch: %w", err)
+		}
+		mismatches = append(mismatches, mismatch)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating pagination_canonical_mismatch: %w", err)
+	}
+
+	for _, mismatch := range mismatches {
+		if err := insertGlobalIssue(db, jobID, &mismatch.urlID, "pagination_canonical_mismatch", "warning", map[string]any{
+			"pageUrl":      mismatch.pageURL,
+			"canonicalUrl": mismatch.canonicalURL,
+		}); err != nil {
+			return 0, err
+		}
+	}
+
+	return len(mismatches), nil
+}
+
+func detectSitemapNon200(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT se.url, f.status_code, u.id
+		FROM sitemap_entries se
+		JOIN urls u ON u.job_id = se.job_id AND u.normalized_url = se.url
+		JOIN fetches f ON f.job_id = se.job_id AND f.requested_url_id = u.id
+		WHERE se.job_id = ? AND f.status_code IS NOT NULL AND f.status_code != 200
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying sitemap_non_200: %w", err)
+	}
+	defer rows.Close()
+
+	type sitemapIssue struct {
+		url        string
+		statusCode int
+		urlID      int64
+	}
+	issues := []sitemapIssue{}
+	for rows.Next() {
+		var issue sitemapIssue
+		if err := rows.Scan(&issue.url, &issue.statusCode, &issue.urlID); err != nil {
+			return 0, fmt.Errorf("scanning sitemap_non_200: %w", err)
+		}
+		issues = append(issues, issue)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating sitemap_non_200: %w", err)
+	}
+
+	for _, issue := range issues {
+		if err := insertGlobalIssue(db, jobID, &issue.urlID, "sitemap_non_200", "warning", map[string]any{
+			"sitemapUrl": issue.url,
+			"statusCode": issue.statusCode,
+		}); err != nil {
+			return 0, err
+		}
+	}
+
+	return len(issues), nil
+}
+
+func detectCrawledNotInSitemap(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT p.url_id, u.normalized_url
+		FROM pages p
+		JOIN urls u ON u.id = p.url_id AND u.job_id = p.job_id
+		LEFT JOIN sitemap_entries se ON se.job_id = p.job_id AND se.url = u.normalized_url
+		WHERE p.job_id = ? AND p.indexability_state = 'indexable' AND se.id IS NULL
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying crawled_not_in_sitemap: %w", err)
+	}
+	defer rows.Close()
+
+	type missing struct {
+		urlID int64
+		url   string
+	}
+	missingURLs := []missing{}
+	for rows.Next() {
+		var item missing
+		if err := rows.Scan(&item.urlID, &item.url); err != nil {
+			return 0, fmt.Errorf("scanning crawled_not_in_sitemap: %w", err)
+		}
+		missingURLs = append(missingURLs, item)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating crawled_not_in_sitemap: %w", err)
+	}
+
+	for _, item := range missingURLs {
+		if err := insertGlobalIssue(db, jobID, &item.urlID, "crawled_not_in_sitemap", "info", map[string]any{
+			"url": item.url,
+		}); err != nil {
+			return 0, err
+		}
+	}
+
+	return len(missingURLs), nil
+}
+
+func detectInSitemapNotCrawled(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT se.url
+		FROM sitemap_entries se
+		LEFT JOIN urls u ON u.job_id = se.job_id AND u.normalized_url = se.url
+		WHERE se.job_id = ? AND (u.id IS NULL OR u.status = 'pending')
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying in_sitemap_not_crawled: %w", err)
+	}
+	defer rows.Close()
+
+	urls := []string{}
+	for rows.Next() {
+		var sitemapURL string
+		if err := rows.Scan(&sitemapURL); err != nil {
+			return 0, fmt.Errorf("scanning in_sitemap_not_crawled: %w", err)
+		}
+		urls = append(urls, sitemapURL)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating in_sitemap_not_crawled: %w", err)
+	}
+
+	for _, sitemapURL := range urls {
+		if err := insertGlobalIssue(db, jobID, nil, "in_sitemap_not_crawled", "info", map[string]any{
+			"url": sitemapURL,
+		}); err != nil {
+			return 0, err
+		}
+	}
+
+	return len(urls), nil
+}
+
+func detectInSitemapRobotsBlocked(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT se.url, u.id
+		FROM sitemap_entries se
+		JOIN urls u ON u.job_id = se.job_id AND u.normalized_url = se.url
+		WHERE se.job_id = ? AND u.status = 'robots_blocked'
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying in_sitemap_robots_blocked: %w", err)
+	}
+	defer rows.Close()
+
+	type blocked struct {
+		urlID int64
+		url   string
+	}
+	blockedURLs := []blocked{}
+	for rows.Next() {
+		var item blocked
+		if err := rows.Scan(&item.url, &item.urlID); err != nil {
+			return 0, fmt.Errorf("scanning in_sitemap_robots_blocked: %w", err)
+		}
+		blockedURLs = append(blockedURLs, item)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating in_sitemap_robots_blocked: %w", err)
+	}
+
+	for _, item := range blockedURLs {
+		if err := insertGlobalIssue(db, jobID, &item.urlID, "in_sitemap_robots_blocked", "warning", map[string]any{
+			"url": item.url,
+		}); err != nil {
+			return 0, err
+		}
+	}
+
+	return len(blockedURLs), nil
+}
+
+func detectHTTPToHTTPSMissing(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT DISTINCT u.host
+		FROM urls u
+		WHERE u.job_id = ? AND u.normalized_url LIKE 'http://%%'
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying HTTP hosts: %w", err)
+	}
+	defer rows.Close()
+
+	hosts := []string{}
+	for rows.Next() {
+		var host string
+		if err := rows.Scan(&host); err != nil {
+			return 0, fmt.Errorf("scanning HTTP host: %w", err)
+		}
+		hosts = append(hosts, host)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating HTTP hosts: %w", err)
+	}
+
+	var total int
+	for _, host := range hosts {
+		var redirectCount int
+		if err := db.QueryRow(`
+			SELECT COUNT(*)
+			FROM redirect_hops rh
+			WHERE rh.job_id = ?
+				AND rh.from_url LIKE 'http://' || ? || '%%'
+				AND rh.to_url LIKE 'https://%%'
+		`, jobID, host).Scan(&redirectCount); err != nil {
+			return total, fmt.Errorf("checking HTTP to HTTPS redirect for host %q: %w", host, err)
+		}
+		if redirectCount > 0 {
+			continue
+		}
+		if err := insertGlobalIssue(db, jobID, nil, "http_to_https_missing", "info", map[string]any{
+			"host": host,
+		}); err != nil {
+			return total, err
+		}
+		total++
+	}
+
+	return total, nil
+}
+
+func minIndex(values []int64) int {
+	if len(values) == 0 {
+		return 0
+	}
+	min := values[0]
+	index := 0
+	for i := 1; i < len(values); i++ {
+		if values[i] < min {
+			min = values[i]
+			index = i
+		}
+	}
+	return index
+}
+
+func parseInt64List(raw string) []int64 {
+	parts := strings.Split(raw, ",")
+	values := make([]int64, 0, len(parts))
+	for _, part := range parts {
+		var value int64
+		fmt.Sscanf(strings.TrimSpace(part), "%d", &value)
+		values = append(values, value)
+	}
+	return values
+}

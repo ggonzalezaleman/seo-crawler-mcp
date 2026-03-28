@@ -1,0 +1,267 @@
+package issues
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
+)
+
+func testDB(t *testing.T) *storage.DB {
+	t.Helper()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "test.db")
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open(%q) failed: %v", dbPath, err)
+	}
+	t.Cleanup(func() {
+		db.Close()
+		os.Remove(dbPath)
+	})
+	return db
+}
+
+func seedJob(t *testing.T, db *storage.DB, jobID string) {
+	t.Helper()
+	_, err := db.Exec(`INSERT INTO crawl_jobs (id, status, seed_urls) VALUES (?, 'completed', '["https://example.com"]')`, jobID)
+	if err != nil {
+		t.Fatalf("seeding job: %v", err)
+	}
+}
+
+func seedURL(t *testing.T, db *storage.DB, jobID, normalizedURL, host, status, discoveredVia string) int64 {
+	t.Helper()
+	result, err := db.Exec(`INSERT INTO urls (job_id, normalized_url, host, status, discovered_via) VALUES (?, ?, ?, ?, ?)`,
+		jobID, normalizedURL, host, status, discoveredVia)
+	if err != nil {
+		t.Fatalf("seeding URL %q: %v", normalizedURL, err)
+	}
+	id, _ := result.LastInsertId()
+	return id
+}
+
+func seedFetch(t *testing.T, db *storage.DB, jobID string, fetchSeq int, requestedURLID int64, statusCode int) int64 {
+	t.Helper()
+	result, err := db.Exec(`INSERT INTO fetches (job_id, fetch_seq, requested_url_id, status_code) VALUES (?, ?, ?, ?)`,
+		jobID, fetchSeq, requestedURLID, statusCode)
+	if err != nil {
+		t.Fatalf("seeding fetch: %v", err)
+	}
+	id, _ := result.LastInsertId()
+	return id
+}
+
+func seedPage(t *testing.T, db *storage.DB, jobID string, urlID, fetchID int64, opts map[string]any) int64 {
+	t.Helper()
+	title, _ := opts["title"].(string)
+	metaDesc, _ := opts["meta_description"].(string)
+	contentHash, _ := opts["content_hash"].(string)
+	depth, _ := opts["depth"].(int)
+	inbound, _ := opts["inbound_edge_count"].(int)
+	canonicalURL, _ := opts["canonical_url"].(string)
+	canonicalStatusCode, _ := opts["canonical_status_code"].(int)
+	hreflangJSON, _ := opts["hreflang_json"].(string)
+	relNextURL, _ := opts["rel_next_url"].(string)
+	relPrevURL, _ := opts["rel_prev_url"].(string)
+	indexability := "indexable"
+	if v, ok := opts["indexability_state"].(string); ok {
+		indexability = v
+	}
+
+	result, err := db.Exec(`INSERT INTO pages (job_id, url_id, fetch_id, depth, title, title_length, meta_description, meta_description_length, content_hash, inbound_edge_count, canonical_url, canonical_status_code, hreflang_json, rel_next_url, rel_prev_url, indexability_state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		jobID, urlID, fetchID, depth,
+		nilIfEmpty(title), len(title),
+		nilIfEmpty(metaDesc), len(metaDesc),
+		nilIfEmpty(contentHash),
+		inbound,
+		nilIfEmpty(canonicalURL), nilIfZero(canonicalStatusCode),
+		nilIfEmpty(hreflangJSON),
+		nilIfEmpty(relNextURL), nilIfEmpty(relPrevURL),
+		indexability,
+	)
+	if err != nil {
+		t.Fatalf("seeding page: %v", err)
+	}
+	id, _ := result.LastInsertId()
+	return id
+}
+
+func nilIfEmpty(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+func nilIfZero(n int) *int {
+	if n == 0 {
+		return nil
+	}
+	return &n
+}
+
+func countIssuesByType(t *testing.T, db *storage.DB, jobID, issueType string) int {
+	t.Helper()
+	var count int
+	err := db.QueryRow(`SELECT COUNT(*) FROM issues WHERE job_id = ? AND issue_type = ?`, jobID, issueType).Scan(&count)
+	if err != nil {
+		t.Fatalf("counting issues: %v", err)
+	}
+	return count
+}
+
+func TestDetectDuplicateTitles(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-dup-titles"
+	seedJob(t, db, jobID)
+
+	u1 := seedURL(t, db, jobID, "https://example.com/a", "example.com", "fetched", "seed")
+	u2 := seedURL(t, db, jobID, "https://example.com/b", "example.com", "fetched", "crawl")
+	u3 := seedURL(t, db, jobID, "https://example.com/c", "example.com", "fetched", "crawl")
+
+	f1 := seedFetch(t, db, jobID, 1, u1, 200)
+	f2 := seedFetch(t, db, jobID, 2, u2, 200)
+	f3 := seedFetch(t, db, jobID, 3, u3, 200)
+
+	// u1 and u2 share title, u3 is unique
+	seedPage(t, db, jobID, u1, f1, map[string]any{"title": "Same Title"})
+	seedPage(t, db, jobID, u2, f2, map[string]any{"title": "Same Title"})
+	seedPage(t, db, jobID, u3, f3, map[string]any{"title": "Unique Title"})
+
+	cfg := DefaultGlobalConfig()
+	n, err := detectDuplicateTitles(db, jobID, cfg)
+	if err != nil {
+		t.Fatalf("detectDuplicateTitles: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 duplicate title issue, got %d", n)
+	}
+	if c := countIssuesByType(t, db, jobID, "duplicate_title"); c != 1 {
+		t.Errorf("expected 1 issue in DB, got %d", c)
+	}
+}
+
+func TestDetectOrphanPages(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-orphan"
+	seedJob(t, db, jobID)
+
+	u1 := seedURL(t, db, jobID, "https://example.com/", "example.com", "fetched", "seed")
+	u2 := seedURL(t, db, jobID, "https://example.com/orphan", "example.com", "fetched", "crawl")
+
+	f1 := seedFetch(t, db, jobID, 1, u1, 200)
+	f2 := seedFetch(t, db, jobID, 2, u2, 200)
+
+	seedPage(t, db, jobID, u1, f1, map[string]any{"title": "Home", "inbound_edge_count": 5})
+	seedPage(t, db, jobID, u2, f2, map[string]any{"title": "Orphan", "inbound_edge_count": 0})
+
+	cfg := DefaultGlobalConfig()
+	n, err := detectOrphanPages(db, jobID, cfg)
+	if err != nil {
+		t.Fatalf("detectOrphanPages: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 orphan page, got %d", n)
+	}
+}
+
+func TestDetectCanonicalToNon200(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-canon-404"
+	seedJob(t, db, jobID)
+
+	u1 := seedURL(t, db, jobID, "https://example.com/page", "example.com", "fetched", "seed")
+	f1 := seedFetch(t, db, jobID, 1, u1, 200)
+	seedPage(t, db, jobID, u1, f1, map[string]any{
+		"title":                 "Page",
+		"canonical_url":         "https://example.com/gone",
+		"canonical_status_code": 404,
+	})
+
+	cfg := DefaultGlobalConfig()
+	n, err := detectCanonicalToNon200(db, jobID, cfg)
+	if err != nil {
+		t.Fatalf("detectCanonicalToNon200: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 canonical to non-200, got %d", n)
+	}
+}
+
+func TestDetectSitemapReconciliation(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-sitemap"
+	seedJob(t, db, jobID)
+
+	// URL in sitemap but not crawled (no matching URL record)
+	_, err := db.Exec(`INSERT INTO sitemap_entries (job_id, url, source_sitemap_url, source_host) VALUES (?, ?, ?, ?)`,
+		jobID, "https://example.com/uncrawled", "https://example.com/sitemap.xml", "example.com")
+	if err != nil {
+		t.Fatalf("seeding sitemap entry: %v", err)
+	}
+
+	cfg := DefaultGlobalConfig()
+	n, err := detectInSitemapNotCrawled(db, jobID, cfg)
+	if err != nil {
+		t.Fatalf("detectInSitemapNotCrawled: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 in-sitemap-not-crawled issue, got %d", n)
+	}
+}
+
+func TestCleanCrawl_NoGlobalIssues(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-clean"
+	seedJob(t, db, jobID)
+
+	u1 := seedURL(t, db, jobID, "https://example.com/", "example.com", "fetched", "seed")
+	u2 := seedURL(t, db, jobID, "https://example.com/about", "example.com", "fetched", "crawl")
+
+	f1 := seedFetch(t, db, jobID, 1, u1, 200)
+	f2 := seedFetch(t, db, jobID, 2, u2, 200)
+
+	seedPage(t, db, jobID, u1, f1, map[string]any{
+		"title":                 "Home Page",
+		"meta_description":      "Welcome to example",
+		"content_hash":          "hash1",
+		"inbound_edge_count":    2,
+		"depth":                 0,
+		"canonical_url":         "https://example.com/",
+		"canonical_status_code": 200,
+	})
+	seedPage(t, db, jobID, u2, f2, map[string]any{
+		"title":                 "About Us",
+		"meta_description":      "About our company",
+		"content_hash":          "hash2",
+		"inbound_edge_count":    1,
+		"depth":                 1,
+		"canonical_url":         "https://example.com/about",
+		"canonical_status_code": 200,
+	})
+
+	// Add sitemap entries matching crawled pages
+	db.Exec(`INSERT INTO sitemap_entries (job_id, url, source_sitemap_url, source_host) VALUES (?, ?, ?, ?)`,
+		jobID, "https://example.com/", "https://example.com/sitemap.xml", "example.com")
+	db.Exec(`INSERT INTO sitemap_entries (job_id, url, source_sitemap_url, source_host) VALUES (?, ?, ?, ?)`,
+		jobID, "https://example.com/about", "https://example.com/sitemap.xml", "example.com")
+
+	cfg := DefaultGlobalConfig()
+	n, err := DetectGlobalIssues(db, jobID, cfg)
+	if err != nil {
+		t.Fatalf("DetectGlobalIssues: %v", err)
+	}
+	if n != 0 {
+		// List what issues were found for debugging
+		rows, _ := db.Query(`SELECT issue_type, severity, scope FROM issues WHERE job_id = ?`, jobID)
+		defer rows.Close()
+		for rows.Next() {
+			var it, sev, sc string
+			rows.Scan(&it, &sev, &sc)
+			t.Logf("unexpected issue: type=%q severity=%q scope=%q", it, sev, sc)
+		}
+		t.Errorf("expected 0 global issues on clean crawl, got %d", n)
+	}
+}
