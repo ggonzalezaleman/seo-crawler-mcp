@@ -16,8 +16,12 @@ func NewFixtureSite() *httptest.Server {
 
 	// robots.txt
 	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, r *http.Request) {
+		scheme := "http"
+		host := r.Host
+		base := scheme + "://" + host
+
 		w.Header().Set("Content-Type", "text/plain")
-		fmt.Fprint(w, "User-agent: *\nAllow: /\nDisallow: /admin/\nSitemap: /sitemap.xml\n")
+		fmt.Fprintf(w, "User-agent: *\nAllow: /\nDisallow: /admin/\nSitemap: %s/sitemap.xml\n", base)
 	})
 
 	// sitemap.xml — includes /hidden-page (orphan: not linked from any page)

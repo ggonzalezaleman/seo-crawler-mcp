@@ -188,12 +188,35 @@ func TestFullCrawl(t *testing.T) {
 		t.Errorf("summary.TotalIssues = %d, want > 0", summary.TotalIssues)
 	}
 
-	// --- Verify specific pages exist ---
+	// --- Verify sitemap entries were discovered ---
+	var sitemapCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM sitemap_entries WHERE job_id = ?", job.ID).Scan(&sitemapCount)
+	if err != nil {
+		t.Fatalf("counting sitemap entries: %v", err)
+	}
+	t.Logf("sitemap entries discovered: %d", sitemapCount)
+	if sitemapCount == 0 {
+		t.Error("expected sitemap entries to be discovered via host onboarding, got 0")
+	}
+
+	// --- Verify robots directives were stored ---
+	var robotsCount int
+	err = db.QueryRow("SELECT COUNT(*) FROM robots_directives WHERE job_id = ?", job.ID).Scan(&robotsCount)
+	if err != nil {
+		t.Fatalf("counting robots directives: %v", err)
+	}
+	t.Logf("robots directives stored: %d", robotsCount)
+	if robotsCount == 0 {
+		t.Error("expected robots directives to be stored via host onboarding, got 0")
+	}
+
+	// --- Verify specific pages exist (including orphan /hidden-page from sitemap) ---
 	expectedPaths := []string{
 		"/", "/about", "/contact", "/blog",
 		"/blog/post-1", "/blog/post-2", "/blog/post-3", "/blog/post-4", "/blog/post-5",
 		"/products", "/products/widget", "/products/widget-pro",
 		"/gallery",
+		"/hidden-page", // orphan page only discoverable via sitemap
 	}
 	for _, path := range expectedPaths {
 		fullURL := site.URL + path

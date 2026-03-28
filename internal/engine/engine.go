@@ -19,6 +19,7 @@ import (
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/frontier"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/issues"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/parser"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/robots"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/ssrf"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/urlutil"
@@ -42,6 +43,10 @@ type Engine struct {
 	scopeChecker *urlutil.ScopeChecker
 	ssrfGuard    *ssrf.Guard
 	config       *config.Config
+
+	// robotsRules caches parsed robots.txt per host during a crawl.
+	robotsRules   map[string]*robots.RobotsFile
+	robotsRulesMu sync.RWMutex
 }
 
 // New creates a new crawl engine.
@@ -166,6 +171,102 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 		e.scopeChecker = sc
 	}
 
+	// ---- Host onboarding: robots.txt + sitemap discovery ----
+	e.robotsRules = map[string]*robots.RobotsFile{}
+	{
+		userAgent := e.config.UserAgent
+		if userAgent == "" {
+			userAgent = "seo-crawler-mcp/0.1"
+		}
+		sitemapMax := e.config.MaxSitemapEntries
+		if sitemapMax <= 0 {
+			sitemapMax = 500000
+		}
+		robotsPolicy := string(e.config.RobotsUnreachablePolicy)
+		if robotsPolicy == "" {
+			robotsPolicy = "allow"
+		}
+		onboarder := crawl.NewHostOnboarderWithPolicy(e.fetcher, e.db, sitemapMax, userAgent, robotsPolicy)
+
+		seenHosts := map[string]bool{}
+		for _, seedURL := range seeds {
+			parsed, parseErr := url.Parse(seedURL)
+			if parseErr != nil {
+				continue
+			}
+			// Use parsed.Host (includes port) for URL construction in onboarding.
+			hostWithPort := parsed.Host
+			hostOnly := parsed.Hostname()
+			if seenHosts[hostWithPort] {
+				continue
+			}
+			seenHosts[hostWithPort] = true
+
+			info, onboardErr := onboarder.OnboardHost(ctx, jobID, hostWithPort, parsed.Scheme)
+			if onboardErr != nil {
+				log.Printf("engine: onboarding host %q: %v", hostWithPort, onboardErr)
+				continue
+			}
+
+			// Cache robots rules for fetch-time checking (keyed by hostname without port)
+			if info.RobotsFile != nil {
+				e.robotsRulesMu.Lock()
+				e.robotsRules[hostOnly] = info.RobotsFile
+				e.robotsRulesMu.Unlock()
+			}
+
+			// Apply crawl delay to rate limiter (keyed by hostname as used in fetcher)
+			if info.CrawlDelay > 0 {
+				e.rateLimiter.SetCrawlDelay(hostOnly, info.CrawlDelay)
+				log.Printf("engine: crawl-delay for %q set to %v", hostOnly, info.CrawlDelay)
+			}
+
+			// Add sitemap URLs to frontier
+			for _, entry := range info.SitemapEntries {
+				normalized, normErr := urlutil.Normalize(entry.Loc)
+				if normErr != nil {
+					continue
+				}
+				parsedURL, parseErr2 := url.Parse(normalized)
+				if parseErr2 != nil {
+					continue
+				}
+				entryHost := parsedURL.Hostname()
+
+				// Check scope
+				if e.scopeChecker != nil && !e.scopeChecker.IsInScope(normalized) {
+					continue
+				}
+
+				// Check robots rules before adding
+				if e.config.RespectRobots && info.RobotsFile != nil {
+					if !info.RobotsFile.IsAllowed(userAgent, parsedURL.Path) {
+						continue
+					}
+				}
+
+				urlID, upsertErr := e.db.UpsertURL(jobID, normalized, entryHost, "queued", true, "sitemap")
+				if upsertErr != nil {
+					continue
+				}
+
+				if !q.Contains(urlID) {
+					q.Push(frontier.Item{
+						URLID:         urlID,
+						NormalizedURL: normalized,
+						Host:          entryHost,
+						Depth:         1, // sitemap URLs are depth 1
+					})
+				}
+			}
+
+			// Log onboarding event
+			eventDetails := fmt.Sprintf(`{"host":%q,"sitemapEntries":%d,"crawlDelay":%q}`,
+				hostWithPort, len(info.SitemapEntries), info.CrawlDelay.String())
+			e.db.InsertEvent(jobID, "host_onboarded", &eventDetails, nil)
+		}
+	}
+
 	// Channels
 	// fetchQueue feeds items from the dispatcher to fetcher workers.
 	fetchQueue := make(chan frontier.Item, 64)
@@ -247,6 +348,21 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 				if !e.scopeChecker.IsInScope(item.NormalizedURL) {
 					inFlight.Add(-1)
 					continue
+				}
+
+				// Check robots.txt rules
+				if e.config.RespectRobots {
+					parsedItem, parseErr := url.Parse(item.NormalizedURL)
+					if parseErr == nil {
+						e.robotsRulesMu.RLock()
+						rf := e.robotsRules[item.Host]
+						e.robotsRulesMu.RUnlock()
+						if rf != nil && !rf.IsAllowed(e.config.UserAgent, parsedItem.Path) {
+							e.db.UpdateURLStatus(item.URLID, "robots_blocked")
+							inFlight.Add(-1)
+							continue
+						}
+					}
 				}
 
 				// Acquire rate limiter
