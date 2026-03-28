@@ -26,24 +26,24 @@ var schemaRules = map[string]SchemaRule{
 		Recommended: []string{"image", "description", "offers", "brand", "sku"},
 	},
 	"Organization": {
-		Required:    []string{"name"},
-		Recommended: []string{"url", "logo", "description", "sameAs"},
+		Required:    []string{},
+		Recommended: []string{"name", "url", "logo", "description", "sameAs"},
 	},
 	"LocalBusiness": {
 		Required:    []string{"name", "address"},
 		Recommended: []string{"telephone", "openingHours", "geo", "image"},
 	},
 	"Person": {
-		Required:    []string{"name"},
-		Recommended: []string{"url", "image", "jobTitle"},
+		Required:    []string{},
+		Recommended: []string{"name", "url", "image", "jobTitle"},
 	},
 	"WebSite": {
-		Required:    []string{"name", "url"},
-		Recommended: []string{"description", "publisher"},
+		Required:    []string{},
+		Recommended: []string{"name", "url", "description", "publisher"},
 	},
 	"WebPage": {
-		Required:    []string{"name"},
-		Recommended: []string{"description", "url"},
+		Required:    []string{},
+		Recommended: []string{"name", "description", "url"},
 	},
 	"BreadcrumbList": {
 		Required:    []string{"itemListElement"},
@@ -70,8 +70,8 @@ var schemaRules = map[string]SchemaRule{
 		Recommended: []string{"reviewRating", "datePublished"},
 	},
 	"Service": {
-		Required:    []string{"name"},
-		Recommended: []string{"description", "provider", "serviceType"},
+		Required:    []string{},
+		Recommended: []string{"name", "description", "provider", "serviceType"},
 	},
 	"SoftwareApplication": {
 		Required:    []string{"name"},
@@ -86,16 +86,16 @@ var schemaRules = map[string]SchemaRule{
 		Recommended: []string{"name", "description"},
 	},
 	"ContactPage": {
-		Required:    []string{"name"},
-		Recommended: []string{"description", "url"},
+		Required:    []string{},
+		Recommended: []string{"name", "description", "url"},
 	},
 	"AboutPage": {
-		Required:    []string{"name"},
-		Recommended: []string{"description", "url"},
+		Required:    []string{},
+		Recommended: []string{"name", "description", "url"},
 	},
 	"CollectionPage": {
-		Required:    []string{"name"},
-		Recommended: []string{"description", "url", "mainEntity"},
+		Required:    []string{},
+		Recommended: []string{"name", "description", "url", "mainEntity"},
 	},
 	"ItemList": {
 		Required:    []string{"itemListElement"},
