@@ -72,6 +72,16 @@ func New(opts Options) *Fetcher {
 	}
 }
 
+// SafeClient returns an *http.Client that uses the fetcher's SSRF-protected
+// transport and timeout. Use this when you need a plain client that still
+// honours the same security constraints as Fetch().
+func (f *Fetcher) SafeClient() *http.Client {
+	return &http.Client{
+		Transport: f.transport,
+		Timeout:   f.opts.Timeout,
+	}
+}
+
 // Fetch performs an HTTP GET request.
 func (f *Fetcher) Fetch(rawURL string) (*FetchResult, error) {
 	return f.do(rawURL, http.MethodGet)
