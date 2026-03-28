@@ -297,6 +297,12 @@ var Explanations = map[string]IssueExplanation{
 		Impact:      "Contradictory signals: the sitemap says 'index this' but robots.txt says 'don't crawl.' Search engines will not index it.",
 		Fix:         "Either remove the URL from the sitemap or remove the robots.txt disallow rule.",
 	},
+	"js_only_navigation": {
+		Title:       "JS-Only Navigation Link",
+		Description: "This internal link is only visible after JavaScript rendering, not in the static HTML source.",
+		Impact:      "Search engines that don't execute JavaScript (or execute it poorly) won't discover this link. This reduces crawl efficiency and may prevent linked pages from being indexed.",
+		Fix:         "Ensure navigation links use standard <a href> tags in the server-rendered HTML. For Next.js, verify the links are rendered server-side, not client-only.",
+	},
 	"http_to_https_missing": {
 		Title:       "Missing HTTP to HTTPS Redirect",
 		Description: "The site's HTTP version does not redirect to HTTPS.",

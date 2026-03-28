@@ -51,6 +51,7 @@ func DetectGlobalIssues(db *storage.DB, jobID string, cfg GlobalConfig) (int, er
 		detectInSitemapNotCrawled,
 		detectInSitemapRobotsBlocked,
 		detectHTTPToHTTPSMissing,
+		detectJSOnlyNavigation,
 	}
 
 	var total int
@@ -883,6 +884,61 @@ func detectHTTPToHTTPSMissing(db *storage.DB, jobID string, _ GlobalConfig) (int
 	}
 
 	return total, nil
+}
+
+func detectJSOnlyNavigation(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	// Find internal link edges that were ONLY discovered via browser rendering
+	// i.e., edges with discovery_mode = 'browser' where there's no matching
+	// static edge from the same source to the same target.
+	rows, err := db.Query(`
+		SELECT DISTINCT e.source_url_id, e.declared_target_url, u_src.normalized_url
+		FROM edges e
+		JOIN urls u_src ON u_src.id = e.source_url_id AND u_src.job_id = e.job_id
+		WHERE e.job_id = ?
+		  AND e.is_internal = 1
+		  AND e.relation_type = 'link'
+		  AND e.discovery_mode = 'browser'
+		  AND NOT EXISTS (
+		      SELECT 1 FROM edges e2
+		      WHERE e2.job_id = e.job_id
+		        AND e2.source_url_id = e.source_url_id
+		        AND e2.declared_target_url = e.declared_target_url
+		        AND e2.discovery_mode = 'static'
+		  )
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying js_only_navigation: %w", err)
+	}
+	defer rows.Close()
+
+	type jsOnlyLink struct {
+		sourceURLID int64
+		targetURL   string
+		sourceURL   string
+	}
+	links := []jsOnlyLink{}
+	for rows.Next() {
+		var link jsOnlyLink
+		if err := rows.Scan(&link.sourceURLID, &link.targetURL, &link.sourceURL); err != nil {
+			return 0, fmt.Errorf("scanning js_only_navigation: %w", err)
+		}
+		links = append(links, link)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating js_only_navigation: %w", err)
+	}
+
+	for _, link := range links {
+		if err := insertGlobalIssue(db, jobID, &link.sourceURLID, "js_only_navigation", "warning", map[string]any{
+			"sourceUrl":     link.sourceURL,
+			"targetUrl":     link.targetURL,
+			"discoveryMode": "browser",
+		}); err != nil {
+			return 0, err
+		}
+	}
+
+	return len(links), nil
 }
 
 func minIndex(values []int64) int {

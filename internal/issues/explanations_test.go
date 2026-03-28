@@ -60,6 +60,7 @@ var allKnownIssueTypes = []string{
 	"in_sitemap_not_crawled",
 	"in_sitemap_robots_blocked",
 	"http_to_https_missing",
+	"js_only_navigation",
 
 	// Engine-level
 	"crawl_trap_suspected",

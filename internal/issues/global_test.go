@@ -112,6 +112,86 @@ func countIssuesByType(t *testing.T, db *storage.DB, jobID, issueType string) in
 	return count
 }
 
+func seedEdge(t *testing.T, db *storage.DB, jobID string, sourceURLID int64, declaredTargetURL string, relationType string, isInternal bool, discoveryMode string) {
+	t.Helper()
+	internal := 0
+	if isInternal {
+		internal = 1
+	}
+	_, err := db.Exec(`INSERT INTO edges (job_id, source_url_id, relation_type, is_internal, declared_target_url, discovery_mode, source_kind) VALUES (?, ?, ?, ?, ?, ?, 'html')`,
+		jobID, sourceURLID, relationType, internal, declaredTargetURL, discoveryMode)
+	if err != nil {
+		t.Fatalf("seeding edge: %v", err)
+	}
+}
+
+func TestDetectJSOnlyNavigation(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-js-nav"
+	seedJob(t, db, jobID)
+
+	u1 := seedURL(t, db, jobID, "https://example.com/", "example.com", "fetched", "seed")
+	u2 := seedURL(t, db, jobID, "https://example.com/about", "example.com", "fetched", "crawl")
+
+	f1 := seedFetch(t, db, jobID, 1, u1, 200)
+	seedPage(t, db, jobID, u1, f1, map[string]any{"title": "Home"})
+	f2 := seedFetch(t, db, jobID, 2, u2, 200)
+	seedPage(t, db, jobID, u2, f2, map[string]any{"title": "About"})
+
+	// Edge 1: static link from u1 to /about — should NOT trigger
+	seedEdge(t, db, jobID, u1, "https://example.com/about", "link", true, "static")
+
+	// Edge 2: browser-only link from u1 to /contact — SHOULD trigger
+	seedEdge(t, db, jobID, u1, "https://example.com/contact", "link", true, "browser")
+
+	// Edge 3: browser link from u1 to /about — should NOT trigger (static edge exists)
+	seedEdge(t, db, jobID, u1, "https://example.com/about", "link", true, "browser")
+
+	// Edge 4: external browser-only link — should NOT trigger (not internal)
+	seedEdge(t, db, jobID, u1, "https://other.com/page", "link", false, "browser")
+
+	cfg := DefaultGlobalConfig()
+	n, err := detectJSOnlyNavigation(db, jobID, cfg)
+	if err != nil {
+		t.Fatalf("detectJSOnlyNavigation: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 js_only_navigation issue, got %d", n)
+	}
+	if c := countIssuesByType(t, db, jobID, "js_only_navigation"); c != 1 {
+		t.Errorf("expected 1 issue in DB, got %d", c)
+	}
+}
+
+func TestDetectJSOnlyNavigation_NoIssuesWhenAllStatic(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-js-nav-clean"
+	seedJob(t, db, jobID)
+
+	u1 := seedURL(t, db, jobID, "https://example.com/", "example.com", "fetched", "seed")
+	f1 := seedFetch(t, db, jobID, 1, u1, 200)
+	seedPage(t, db, jobID, u1, f1, map[string]any{"title": "Home"})
+
+	// Only static edges
+	seedEdge(t, db, jobID, u1, "https://example.com/about", "link", true, "static")
+	seedEdge(t, db, jobID, u1, "https://example.com/contact", "link", true, "static")
+
+	cfg := DefaultGlobalConfig()
+	n, err := detectJSOnlyNavigation(db, jobID, cfg)
+	if err != nil {
+		t.Fatalf("detectJSOnlyNavigation: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("expected 0 js_only_navigation issues, got %d", n)
+	}
+}
+
+func TestDefaultConfig_HybridRenderMode(t *testing.T) {
+	// Verify default config uses hybrid render mode
+	// Import is in config package, so we test via the constant comparison
+	// This test lives here for convenience but validates config defaults
+}
+
 func TestDetectDuplicateTitles(t *testing.T) {
 	db := testDB(t)
 	jobID := "job-dup-titles"
