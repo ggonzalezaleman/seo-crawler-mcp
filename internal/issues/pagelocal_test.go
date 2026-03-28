@@ -26,6 +26,16 @@ func cleanPage() PageContext {
 		JSONLDBlocks:     1,
 		WordCount:        500,
 		MainContentWordCount: 400,
+		PageURL:          "https://example.com/page",
+		HeadTagCount:     1,
+		BodyTagCount:     1,
+		ResponseHeaders: map[string][]string{
+			"Strict-Transport-Security": {"max-age=31536000"},
+			"X-Content-Type-Options":    {"nosniff"},
+			"X-Frame-Options":           {"DENY"},
+			"Content-Security-Policy":   {"default-src 'self'"},
+			"Referrer-Policy":           {"strict-origin-when-cross-origin"},
+		},
 	}
 }
 
@@ -871,5 +881,318 @@ func TestBatchA_CanonicalOutsideHead(t *testing.T) {
 	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
 	if !hasIssue(issues, "canonical_outside_head") {
 		t.Error("expected canonical_outside_head issue")
+	}
+}
+
+// ── Medium: Security Headers ───────────────────────────────────────
+
+func TestMedium_MissingHSTSHeader(t *testing.T) {
+	ctx := cleanPage()
+	ctx.PageURL = "https://example.com/page"
+	ctx.ResponseHeaders = map[string][]string{
+		"X-Content-Type-Options":  {"nosniff"},
+		"X-Frame-Options":         {"DENY"},
+		"Content-Security-Policy": {"default-src 'self'"},
+		"Referrer-Policy":         {"strict-origin-when-cross-origin"},
+	}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "missing_hsts_header") {
+		t.Error("expected missing_hsts_header issue")
+	}
+}
+
+func TestMedium_HSTSNotRequiredOnHTTP(t *testing.T) {
+	ctx := cleanPage()
+	ctx.PageURL = "http://example.com/page"
+	ctx.ResponseHeaders = map[string][]string{}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if hasIssue(issues, "missing_hsts_header") {
+		t.Error("missing_hsts_header should not fire on HTTP pages")
+	}
+}
+
+func TestMedium_MissingXContentTypeOptions(t *testing.T) {
+	ctx := cleanPage()
+	delete(ctx.ResponseHeaders, "X-Content-Type-Options")
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "missing_x_content_type_options") {
+		t.Error("expected missing_x_content_type_options issue")
+	}
+}
+
+func TestMedium_MissingXFrameOptions(t *testing.T) {
+	ctx := cleanPage()
+	delete(ctx.ResponseHeaders, "X-Frame-Options")
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "missing_x_frame_options") {
+		t.Error("expected missing_x_frame_options issue")
+	}
+}
+
+func TestMedium_MissingCSP(t *testing.T) {
+	ctx := cleanPage()
+	delete(ctx.ResponseHeaders, "Content-Security-Policy")
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "missing_content_security_policy") {
+		t.Error("expected missing_content_security_policy issue")
+	}
+}
+
+func TestMedium_MissingReferrerPolicy(t *testing.T) {
+	ctx := cleanPage()
+	delete(ctx.ResponseHeaders, "Referrer-Policy")
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "missing_referrer_policy") {
+		t.Error("expected missing_referrer_policy issue")
+	}
+}
+
+func TestMedium_InsecureReferrerPolicy(t *testing.T) {
+	ctx := cleanPage()
+	ctx.ResponseHeaders["Referrer-Policy"] = []string{"unsafe-url"}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "missing_referrer_policy") {
+		t.Error("expected missing_referrer_policy for unsafe-url")
+	}
+}
+
+func TestMedium_UnsafeCrossOriginLinks(t *testing.T) {
+	ctx := cleanPage()
+	ctx.UnsafeCrossOriginCount = 3
+	ctx.UnsafeCrossOriginExamples = []string{"https://evil.com/page"}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "unsafe_cross_origin_links") {
+		t.Error("expected unsafe_cross_origin_links issue")
+	}
+}
+
+func TestMedium_FormOnHTTP(t *testing.T) {
+	ctx := cleanPage()
+	ctx.FormInsecureActions = []string{"http://example.com/submit"}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "form_on_http") {
+		t.Error("expected form_on_http issue")
+	}
+}
+
+func TestMedium_ProtocolRelativeURLs(t *testing.T) {
+	ctx := cleanPage()
+	ctx.ProtocolRelativeCount = 5
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "protocol_relative_urls") {
+		t.Error("expected protocol_relative_urls issue")
+	}
+}
+
+// ── Medium: Hreflang ───────────────────────────────────────────────
+
+func TestMedium_HreflangMissingSelf(t *testing.T) {
+	ctx := cleanPage()
+	ctx.PageURL = "https://example.com/en"
+	ctx.Hreflangs = []parser.HreflangEntry{
+		{Lang: "es", URL: "https://example.com/es"},
+		{Lang: "fr", URL: "https://example.com/fr"},
+	}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "hreflang_missing_self") {
+		t.Error("expected hreflang_missing_self issue")
+	}
+}
+
+func TestMedium_HreflangWithSelf(t *testing.T) {
+	ctx := cleanPage()
+	ctx.PageURL = "https://example.com/en"
+	ctx.Hreflangs = []parser.HreflangEntry{
+		{Lang: "en", URL: "https://example.com/en"},
+		{Lang: "es", URL: "https://example.com/es"},
+	}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if hasIssue(issues, "hreflang_missing_self") {
+		t.Error("should not flag hreflang_missing_self when self-reference exists")
+	}
+}
+
+func TestMedium_HreflangMissingXDefault(t *testing.T) {
+	ctx := cleanPage()
+	ctx.PageURL = "https://example.com/en"
+	ctx.Hreflangs = []parser.HreflangEntry{
+		{Lang: "en", URL: "https://example.com/en"},
+		{Lang: "es", URL: "https://example.com/es"},
+	}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "hreflang_missing_x_default") {
+		t.Error("expected hreflang_missing_x_default issue")
+	}
+}
+
+func TestMedium_HreflangWithXDefault(t *testing.T) {
+	ctx := cleanPage()
+	ctx.PageURL = "https://example.com/en"
+	ctx.Hreflangs = []parser.HreflangEntry{
+		{Lang: "en", URL: "https://example.com/en"},
+		{Lang: "x-default", URL: "https://example.com/"},
+	}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if hasIssue(issues, "hreflang_missing_x_default") {
+		t.Error("should not flag hreflang_missing_x_default when x-default exists")
+	}
+}
+
+func TestMedium_HreflangInvalidLanguageCode(t *testing.T) {
+	ctx := cleanPage()
+	ctx.PageURL = "https://example.com/en"
+	ctx.Hreflangs = []parser.HreflangEntry{
+		{Lang: "en", URL: "https://example.com/en"},
+		{Lang: "xyz", URL: "https://example.com/xyz"},
+		{Lang: "x-default", URL: "https://example.com/"},
+	}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "hreflang_invalid_language_code") {
+		t.Error("expected hreflang_invalid_language_code issue for 'xyz'")
+	}
+}
+
+func TestMedium_HreflangValidRegionCode(t *testing.T) {
+	ctx := cleanPage()
+	ctx.PageURL = "https://example.com/en-us"
+	ctx.Hreflangs = []parser.HreflangEntry{
+		{Lang: "en-US", URL: "https://example.com/en-us"},
+		{Lang: "x-default", URL: "https://example.com/"},
+	}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if hasIssue(issues, "hreflang_invalid_language_code") {
+		t.Error("en-US should be a valid hreflang code")
+	}
+}
+
+func TestMedium_HreflangOutsideHead(t *testing.T) {
+	ctx := cleanPage()
+	ctx.HreflangOutsideHead = true
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "hreflang_outside_head") {
+		t.Error("expected hreflang_outside_head issue")
+	}
+}
+
+// ── Medium: HTML Validation ────────────────────────────────────────
+
+func TestMedium_InvalidHTMLInHead(t *testing.T) {
+	ctx := cleanPage()
+	ctx.InvalidHTMLInHead = []string{"div", "span"}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "invalid_html_in_head") {
+		t.Error("expected invalid_html_in_head issue")
+	}
+}
+
+func TestMedium_MultipleHeadTags(t *testing.T) {
+	ctx := cleanPage()
+	ctx.HeadTagCount = 2
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "multiple_head_tags") {
+		t.Error("expected multiple_head_tags issue")
+	}
+}
+
+func TestMedium_MultipleBodyTags(t *testing.T) {
+	ctx := cleanPage()
+	ctx.BodyTagCount = 2
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "multiple_body_tags") {
+		t.Error("expected multiple_body_tags issue")
+	}
+}
+
+func TestMedium_HTMLTooLarge(t *testing.T) {
+	ctx := cleanPage()
+	ctx.BodySize = 16 * 1024 * 1024 // 16MB
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "html_too_large") {
+		t.Error("expected html_too_large issue")
+	}
+}
+
+func TestMedium_HTMLNotTooLarge(t *testing.T) {
+	ctx := cleanPage()
+	ctx.BodySize = 10 * 1024 * 1024 // 10MB
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if hasIssue(issues, "html_too_large") {
+		t.Error("should not flag html_too_large for 10MB")
+	}
+}
+
+// ── Medium: Content ────────────────────────────────────────────────
+
+func TestMedium_LoremIpsumDetected(t *testing.T) {
+	ctx := cleanPage()
+	ctx.TextContent = "This is some sample text with Lorem Ipsum dolor sit amet placeholder content."
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "lorem_ipsum_detected") {
+		t.Error("expected lorem_ipsum_detected issue")
+	}
+}
+
+func TestMedium_NoLoremIpsum(t *testing.T) {
+	ctx := cleanPage()
+	ctx.TextContent = "This is real content about our products and services."
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if hasIssue(issues, "lorem_ipsum_detected") {
+		t.Error("should not flag lorem_ipsum_detected for real content")
+	}
+}
+
+func TestMedium_Soft404_TitleNotFound(t *testing.T) {
+	ctx := cleanPage()
+	ctx.Title = "Page Not Found"
+	ctx.WordCount = 50
+	ctx.TextContent = "Sorry, the page you requested could not be located."
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "soft_404") {
+		t.Error("expected soft_404 issue for title containing 'not found'")
+	}
+}
+
+func TestMedium_Soft404_Body404(t *testing.T) {
+	ctx := cleanPage()
+	ctx.Title = "Error"
+	ctx.WordCount = 30
+	ctx.TextContent = "Error 404 - the requested resource was not available"
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "soft_404") {
+		t.Error("expected soft_404 issue for body containing '404'")
+	}
+}
+
+func TestMedium_Soft404_NotTriggeredForLargePages(t *testing.T) {
+	ctx := cleanPage()
+	ctx.Title = "Our Blog About 404 Errors"
+	ctx.WordCount = 500
+	ctx.TextContent = "This article discusses how to handle 404 errors gracefully on your website..."
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if hasIssue(issues, "soft_404") {
+		t.Error("should not flag soft_404 for pages with >100 words")
+	}
+}
+
+// ── Medium: Hreflang code validation helpers ───────────────────────
+
+func TestIsValidHreflangCode(t *testing.T) {
+	tests := []struct {
+		code  string
+		valid bool
+	}{
+		{"en", true},
+		{"en-US", true},
+		{"es-MX", true},
+		{"zh-CN", true},
+		{"xyz", false},
+		{"en-USA", false}, // region must be 2 chars
+		{"", false},
+	}
+	for _, tt := range tests {
+		got := isValidHreflangCode(tt.code)
+		if got != tt.valid {
+			t.Errorf("isValidHreflangCode(%q) = %v, want %v", tt.code, got, tt.valid)
+		}
 	}
 }

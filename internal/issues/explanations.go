@@ -499,6 +499,147 @@ var Explanations = map[string]IssueExplanation{
 		Fix:         "Fix the URL generation logic and redirect repetitive URLs to the correct canonical path.",
 	},
 
+	// ── Medium: Security Headers ───────────────────────────────────────
+
+	"missing_hsts_header": {
+		Title:       "Missing HSTS Header",
+		Description: "This HTTPS page does not send a Strict-Transport-Security header.",
+		Impact:      "Without HSTS, browsers may still allow HTTP connections, leaving users vulnerable to protocol downgrade attacks.",
+		Fix:         "Add the Strict-Transport-Security header with an appropriate max-age directive (e.g., max-age=31536000).",
+	},
+	"missing_x_content_type_options": {
+		Title:       "Missing X-Content-Type-Options Header",
+		Description: "The response does not include X-Content-Type-Options: nosniff.",
+		Impact:      "Without this header, browsers may MIME-sniff responses, potentially executing malicious content as a different type.",
+		Fix:         "Add the header X-Content-Type-Options: nosniff to all responses.",
+	},
+	"missing_x_frame_options": {
+		Title:       "Missing X-Frame-Options Header",
+		Description: "The response does not include an X-Frame-Options header.",
+		Impact:      "Without this header, the page can be embedded in iframes on other sites, making it vulnerable to clickjacking attacks.",
+		Fix:         "Add X-Frame-Options: DENY or X-Frame-Options: SAMEORIGIN to prevent framing by external sites.",
+	},
+	"missing_content_security_policy": {
+		Title:       "Missing Content Security Policy",
+		Description: "The response does not include a Content-Security-Policy header.",
+		Impact:      "Without CSP, the page has no protection against cross-site scripting (XSS) and data injection attacks.",
+		Fix:         "Implement a Content-Security-Policy header that restricts resource loading to trusted sources.",
+	},
+	"missing_referrer_policy": {
+		Title:       "Missing or Insecure Referrer Policy",
+		Description: "The response has no Referrer-Policy header, or it uses an insecure value like unsafe-url.",
+		Impact:      "Without a secure referrer policy, sensitive URL information may leak to external sites via the Referer header.",
+		Fix:         "Add Referrer-Policy: strict-origin-when-cross-origin or a more restrictive policy.",
+	},
+	"unsafe_cross_origin_links": {
+		Title:       "Unsafe Cross-Origin Links",
+		Description: "External links with target=\"_blank\" are missing rel=\"noopener\" or rel=\"noreferrer\".",
+		Impact:      "Without noopener/noreferrer, the linked page can access window.opener and potentially redirect your page or steal data.",
+		Fix:         "Add rel=\"noopener noreferrer\" to all external links that use target=\"_blank\".",
+	},
+	"form_on_http": {
+		Title:       "Insecure Form Submission",
+		Description: "A form on this page submits data to an HTTP (non-HTTPS) URL.",
+		Impact:      "Form data sent over HTTP is transmitted in plaintext, exposing sensitive user input to interception.",
+		Fix:         "Change the form action to use HTTPS, or use a relative URL if the page is already on HTTPS.",
+	},
+	"protocol_relative_urls": {
+		Title:       "Protocol-Relative URLs",
+		Description: "Links or resources use protocol-relative URLs (starting with //) instead of explicit HTTPS.",
+		Impact:      "Protocol-relative URLs inherit the page's protocol. On HTTP pages, this loads resources over insecure HTTP.",
+		Fix:         "Replace protocol-relative URLs with explicit https:// URLs.",
+	},
+
+	// ── Medium: Hreflang ───────────────────────────────────────────────
+
+	"hreflang_missing_self": {
+		Title:       "Hreflang Missing Self-Reference",
+		Description: "This page declares hreflang alternates but does not include itself in the list.",
+		Impact:      "Google requires each page in an hreflang set to reference itself. Missing self-references can cause hreflang to be ignored.",
+		Fix:         "Add a hreflang link pointing to the page's own URL with the appropriate language code.",
+	},
+	"hreflang_missing_x_default": {
+		Title:       "Hreflang Missing x-default",
+		Description: "This page has hreflang declarations but none with hreflang=\"x-default\".",
+		Impact:      "Without x-default, search engines don't know which page to show users whose language doesn't match any declared alternate.",
+		Fix:         "Add a hreflang=\"x-default\" link pointing to your default or language-selector page.",
+	},
+	"hreflang_invalid_language_code": {
+		Title:       "Invalid Hreflang Language Code",
+		Description: "An hreflang tag uses a language code that doesn't conform to ISO 639-1 or valid region codes.",
+		Impact:      "Invalid language codes cause search engines to ignore the hreflang declaration entirely.",
+		Fix:         "Use valid ISO 639-1 language codes (e.g., 'en', 'es', 'fr') optionally with ISO 3166-1 region codes (e.g., 'en-US').",
+	},
+	"hreflang_outside_head": {
+		Title:       "Hreflang Link Outside Head",
+		Description: "An hreflang <link> tag was found in the <body> instead of the <head>.",
+		Impact:      "Search engines may not process hreflang declarations that appear outside the <head> section.",
+		Fix:         "Move all <link rel=\"alternate\" hreflang=\"...\"> tags into the <head> section.",
+	},
+
+	// ── Medium: Sitemap Improvements ───────────────────────────────────
+
+	"non_indexable_in_sitemap": {
+		Title:       "Non-Indexable URL in Sitemap",
+		Description: "A URL listed in the sitemap is not indexable (e.g., noindex, canonicalized away).",
+		Impact:      "Including non-indexable URLs in sitemaps sends conflicting signals to search engines and wastes crawl budget.",
+		Fix:         "Remove non-indexable URLs from the sitemap, or fix their indexability issues.",
+	},
+	"url_in_multiple_sitemaps": {
+		Title:       "URL in Multiple Sitemaps",
+		Description: "The same URL appears in more than one sitemap file.",
+		Impact:      "Duplicate sitemap entries don't cause ranking harm but indicate disorganized sitemap management.",
+		Fix:         "Deduplicate URLs across sitemap files to keep them clean and manageable.",
+	},
+	"sitemap_too_large": {
+		Title:       "Sitemap Too Large",
+		Description: "A sitemap file contains more than 50,000 URLs, exceeding the sitemap protocol limit.",
+		Impact:      "Sitemaps exceeding 50K URLs or 50MB may not be fully processed by search engines.",
+		Fix:         "Split large sitemaps into multiple files with fewer than 50,000 URLs each, and reference them from a sitemap index.",
+	},
+
+	// ── Medium: HTML Validation ────────────────────────────────────────
+
+	"invalid_html_in_head": {
+		Title:       "Invalid HTML Elements in Head",
+		Description: "Non-standard elements (like <div>, <span>, <p>) were found inside the <head> section.",
+		Impact:      "Invalid elements in <head> can cause browsers to prematurely close the head, pushing subsequent meta tags into the body where they won't be processed.",
+		Fix:         "Remove or relocate non-meta elements from the <head> section. Only <title>, <meta>, <link>, <script>, <style>, and <base> belong in <head>.",
+	},
+	"multiple_head_tags": {
+		Title:       "Multiple Head Tags",
+		Description: "More than one <head> element was found in the HTML document.",
+		Impact:      "Multiple <head> tags indicate malformed HTML that may cause browsers and search engines to misparse the document.",
+		Fix:         "Ensure only one <head> element exists in the document. Check for template or CMS injection issues.",
+	},
+	"multiple_body_tags": {
+		Title:       "Multiple Body Tags",
+		Description: "More than one <body> element was found in the HTML document.",
+		Impact:      "Multiple <body> tags indicate severely malformed HTML that may cause unpredictable rendering and indexing.",
+		Fix:         "Ensure only one <body> element exists. Check for template concatenation or CMS issues.",
+	},
+	"html_too_large": {
+		Title:       "HTML Document Too Large",
+		Description: "The HTML response body exceeds 15MB.",
+		Impact:      "Extremely large HTML documents slow down page load, waste bandwidth, and may not be fully indexed by search engines.",
+		Fix:         "Reduce HTML size by lazy-loading content, paginating, or removing unnecessary inline data.",
+	},
+
+	// ── Medium: Content ────────────────────────────────────────────────
+
+	"lorem_ipsum_detected": {
+		Title:       "Lorem Ipsum Placeholder Text",
+		Description: "The page contains 'lorem ipsum' placeholder text.",
+		Impact:      "Placeholder text indicates unfinished content that provides no value to users or search engines.",
+		Fix:         "Replace all lorem ipsum text with real, relevant content before publishing.",
+	},
+	"soft_404": {
+		Title:       "Soft 404 Detected",
+		Description: "This page returns HTTP 200 but its content strongly suggests it is an error page (e.g., 'page not found').",
+		Impact:      "Soft 404s waste crawl budget because search engines index empty error pages that provide no value.",
+		Fix:         "Return a proper 404 or 410 status code for pages that no longer exist, or add meaningful content.",
+	},
+
 	// ── Engine-level issues (from crawler engine) ───────────────────────
 
 	"crawl_trap_suspected": {

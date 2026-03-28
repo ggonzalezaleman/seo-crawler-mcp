@@ -78,6 +78,22 @@ type PageContext struct {
 
 	// URL of the page being analyzed (Batch B)
 	PageURL string
+
+	// Medium-priority detectors
+	ResponseHeaders           map[string][]string // HTTP response headers
+	Hreflangs                 []parser.HreflangEntry
+	FormInsecureActions       []string
+	ProtocolRelativeCount     int
+	HreflangOutsideHead       bool
+	InvalidHTMLInHead         []string
+	HeadTagCount              int
+	BodyTagCount              int
+	BodySize                  int64 // response body size in bytes
+	TextContent               string // extracted visible text for content checks
+
+	// Edge data for unsafe cross-origin links
+	UnsafeCrossOriginCount    int
+	UnsafeCrossOriginExamples []string
 }
 
 // Thresholds holds configurable limits for issue detection.
@@ -451,6 +467,154 @@ func DetectPageLocalIssues(ctx PageContext, thresholds Thresholds, depth int) []
 	// ── Batch B: URL issues ────────────────────────────────────────────
 	issues = append(issues, DetectURLIssues(ctx.PageURL)...)
 
+	// ── Medium: Security Headers ───────────────────────────────────────
+
+	if ctx.ResponseHeaders != nil {
+		pageURLParsed, _ := url.Parse(ctx.PageURL)
+		isHTTPS := pageURLParsed != nil && pageURLParsed.Scheme == "https"
+
+		if isHTTPS && getHeader(ctx.ResponseHeaders, "Strict-Transport-Security") == "" {
+			issues = append(issues, newIssue("missing_hsts_header", "warning", map[string]any{}))
+		}
+		if getHeader(ctx.ResponseHeaders, "X-Content-Type-Options") == "" {
+			issues = append(issues, newIssue("missing_x_content_type_options", "info", map[string]any{}))
+		}
+		if getHeader(ctx.ResponseHeaders, "X-Frame-Options") == "" {
+			issues = append(issues, newIssue("missing_x_frame_options", "info", map[string]any{}))
+		}
+		if getHeader(ctx.ResponseHeaders, "Content-Security-Policy") == "" {
+			issues = append(issues, newIssue("missing_content_security_policy", "info", map[string]any{}))
+		}
+		rp := getHeader(ctx.ResponseHeaders, "Referrer-Policy")
+		if rp == "" || !isSecureReferrerPolicy(rp) {
+			issues = append(issues, newIssue("missing_referrer_policy", "info", map[string]any{}))
+		}
+	}
+
+	// unsafe_cross_origin_links
+	if ctx.UnsafeCrossOriginCount > 0 {
+		issues = append(issues, newIssue("unsafe_cross_origin_links", "warning", map[string]any{
+			"count":    ctx.UnsafeCrossOriginCount,
+			"examples": ctx.UnsafeCrossOriginExamples,
+		}))
+	}
+
+	// form_on_http
+	for _, formAction := range ctx.FormInsecureActions {
+		issues = append(issues, newIssue("form_on_http", "warning", map[string]any{
+			"formAction": formAction,
+		}))
+	}
+
+	// protocol_relative_urls
+	if ctx.ProtocolRelativeCount > 0 {
+		issues = append(issues, newIssue("protocol_relative_urls", "info", map[string]any{
+			"count": ctx.ProtocolRelativeCount,
+		}))
+	}
+
+	// ── Medium: Hreflang ───────────────────────────────────────────────
+
+	if len(ctx.Hreflangs) > 0 {
+		// hreflang_missing_self
+		hasSelf := false
+		for _, entry := range ctx.Hreflangs {
+			if normalizeForComparison(entry.URL) == normalizeForComparison(ctx.PageURL) {
+				hasSelf = true
+				break
+			}
+		}
+		if !hasSelf {
+			issues = append(issues, newIssue("hreflang_missing_self", "warning", map[string]any{
+				"pageUrl": ctx.PageURL,
+			}))
+		}
+
+		// hreflang_missing_x_default
+		hasXDefault := false
+		for _, entry := range ctx.Hreflangs {
+			if strings.ToLower(entry.Lang) == "x-default" {
+				hasXDefault = true
+				break
+			}
+		}
+		if !hasXDefault {
+			issues = append(issues, newIssue("hreflang_missing_x_default", "warning", map[string]any{}))
+		}
+
+		// hreflang_invalid_language_code
+		for _, entry := range ctx.Hreflangs {
+			lang := strings.ToLower(entry.Lang)
+			if lang == "x-default" {
+				continue
+			}
+			if !isValidHreflangCode(lang) {
+				issues = append(issues, newIssue("hreflang_invalid_language_code", "warning", map[string]any{
+					"invalidCode": entry.Lang,
+					"url":         entry.URL,
+				}))
+			}
+		}
+	}
+
+	// hreflang_outside_head
+	if ctx.HreflangOutsideHead {
+		issues = append(issues, newIssue("hreflang_outside_head", "warning", map[string]any{}))
+	}
+
+	// ── Medium: HTML Validation ────────────────────────────────────────
+
+	if len(ctx.InvalidHTMLInHead) > 0 {
+		issues = append(issues, newIssue("invalid_html_in_head", "warning", map[string]any{
+			"elements": ctx.InvalidHTMLInHead,
+		}))
+	}
+
+	if ctx.HeadTagCount > 1 {
+		issues = append(issues, newIssue("multiple_head_tags", "warning", map[string]any{
+			"count": ctx.HeadTagCount,
+		}))
+	}
+
+	if ctx.BodyTagCount > 1 {
+		issues = append(issues, newIssue("multiple_body_tags", "warning", map[string]any{
+			"count": ctx.BodyTagCount,
+		}))
+	}
+
+	if ctx.BodySize > 15*1024*1024 {
+		issues = append(issues, newIssue("html_too_large", "warning", map[string]any{
+			"sizeKB": ctx.BodySize / 1024,
+		}))
+	}
+
+	// ── Medium: Content ────────────────────────────────────────────────
+
+	if ctx.TextContent != "" && strings.Contains(strings.ToLower(ctx.TextContent), "lorem ipsum") {
+		issues = append(issues, newIssue("lorem_ipsum_detected", "warning", map[string]any{}))
+	}
+
+	// soft_404: page returns 200 but looks like an error page
+	if ctx.StatusCode == 200 && ctx.WordCount < 100 {
+		titleLower := strings.ToLower(ctx.Title)
+		textLower := strings.ToLower(ctx.TextContent)
+		soft404Patterns := []string{"page not found", "404", "not found", "doesn't exist", "does not exist", "no longer available"}
+		for _, pattern := range soft404Patterns {
+			if strings.Contains(titleLower, pattern) {
+				issues = append(issues, newIssue("soft_404", "info", map[string]any{
+					"signal": "title contains '" + pattern + "'",
+				}))
+				break
+			}
+			if strings.Contains(textLower, pattern) {
+				issues = append(issues, newIssue("soft_404", "info", map[string]any{
+					"signal": "body contains '" + pattern + "'",
+				}))
+				break
+			}
+		}
+	}
+
 	return issues
 }
 
@@ -590,6 +754,98 @@ func directivesMatch(a, b map[string]bool) bool {
 		}
 	}
 	return true
+}
+
+// getHeader retrieves a header value case-insensitively from a map.
+func getHeader(headers map[string][]string, key string) string {
+	// http.Header is canonicalized, so try canonical first
+	if vals, ok := headers[key]; ok && len(vals) > 0 {
+		return vals[0]
+	}
+	// Fallback: case-insensitive search
+	keyLower := strings.ToLower(key)
+	for k, vals := range headers {
+		if strings.ToLower(k) == keyLower && len(vals) > 0 {
+			return vals[0]
+		}
+	}
+	return ""
+}
+
+// isSecureReferrerPolicy checks if the referrer policy is a secure value.
+func isSecureReferrerPolicy(policy string) bool {
+	secure := map[string]bool{
+		"no-referrer":                   true,
+		"no-referrer-when-downgrade":    true,
+		"strict-origin":                 true,
+		"strict-origin-when-cross-origin": true,
+		"same-origin":                   true,
+		"origin":                        true,
+		"origin-when-cross-origin":      true,
+	}
+	return secure[strings.TrimSpace(strings.ToLower(policy))]
+}
+
+// validISO639_1 contains common ISO 639-1 language codes.
+var validISO639_1 = map[string]bool{
+	"aa": true, "ab": true, "af": true, "ak": true, "am": true, "an": true, "ar": true, "as": true,
+	"av": true, "ay": true, "az": true, "ba": true, "be": true, "bg": true, "bh": true, "bi": true,
+	"bm": true, "bn": true, "bo": true, "br": true, "bs": true, "ca": true, "ce": true, "ch": true,
+	"co": true, "cr": true, "cs": true, "cu": true, "cv": true, "cy": true, "da": true, "de": true,
+	"dv": true, "dz": true, "ee": true, "el": true, "en": true, "eo": true, "es": true, "et": true,
+	"eu": true, "fa": true, "ff": true, "fi": true, "fj": true, "fo": true, "fr": true, "fy": true,
+	"ga": true, "gd": true, "gl": true, "gn": true, "gu": true, "gv": true, "ha": true, "he": true,
+	"hi": true, "ho": true, "hr": true, "ht": true, "hu": true, "hy": true, "hz": true, "ia": true,
+	"id": true, "ie": true, "ig": true, "ii": true, "ik": true, "io": true, "is": true, "it": true,
+	"iu": true, "ja": true, "jv": true, "ka": true, "kg": true, "ki": true, "kj": true, "kk": true,
+	"kl": true, "km": true, "kn": true, "ko": true, "kr": true, "ks": true, "ku": true, "kv": true,
+	"kw": true, "ky": true, "la": true, "lb": true, "lg": true, "li": true, "ln": true, "lo": true,
+	"lt": true, "lu": true, "lv": true, "mg": true, "mh": true, "mi": true, "mk": true, "ml": true,
+	"mn": true, "mr": true, "ms": true, "mt": true, "my": true, "na": true, "nb": true, "nd": true,
+	"ne": true, "ng": true, "nl": true, "nn": true, "no": true, "nr": true, "nv": true, "ny": true,
+	"oc": true, "oj": true, "om": true, "or": true, "os": true, "pa": true, "pi": true, "pl": true,
+	"ps": true, "pt": true, "qu": true, "rm": true, "rn": true, "ro": true, "ru": true, "rw": true,
+	"sa": true, "sc": true, "sd": true, "se": true, "sg": true, "si": true, "sk": true, "sl": true,
+	"sm": true, "sn": true, "so": true, "sq": true, "sr": true, "ss": true, "st": true, "su": true,
+	"sv": true, "sw": true, "ta": true, "te": true, "tg": true, "th": true, "ti": true, "tk": true,
+	"tl": true, "tn": true, "to": true, "tr": true, "ts": true, "tt": true, "tw": true, "ty": true,
+	"ug": true, "uk": true, "ur": true, "uz": true, "ve": true, "vi": true, "vo": true, "wa": true,
+	"wo": true, "xh": true, "yi": true, "yo": true, "za": true, "zh": true, "zu": true,
+}
+
+// isValidHreflangCode checks if a hreflang code is valid (ISO 639-1, optionally with region).
+func isValidHreflangCode(code string) bool {
+	parts := strings.SplitN(code, "-", 2)
+	lang := strings.ToLower(parts[0])
+	if !validISO639_1[lang] {
+		return false
+	}
+	if len(parts) == 2 {
+		region := strings.ToUpper(parts[1])
+		// Region should be 2 uppercase letters (ISO 3166-1 alpha-2)
+		if len(region) != 2 {
+			return false
+		}
+		for _, ch := range region {
+			if ch < 'A' || ch > 'Z' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// normalizeForComparison normalizes a URL for comparison (strips trailing slash).
+func normalizeForComparison(u string) string {
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return u
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	if parsed.Path == "" {
+		parsed.Path = "/"
+	}
+	return parsed.String()
 }
 
 func newIssue(issueType, severity string, details map[string]any) DetectedIssue {

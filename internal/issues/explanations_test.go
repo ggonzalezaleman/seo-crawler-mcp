@@ -98,6 +98,37 @@ var allKnownIssueTypes = []string{
 	"non_indexable_canonical",
 	"unlinked_canonical",
 
+	// Medium: Security Headers
+	"missing_hsts_header",
+	"missing_x_content_type_options",
+	"missing_x_frame_options",
+	"missing_content_security_policy",
+	"missing_referrer_policy",
+	"unsafe_cross_origin_links",
+	"form_on_http",
+	"protocol_relative_urls",
+
+	// Medium: Hreflang
+	"hreflang_missing_self",
+	"hreflang_missing_x_default",
+	"hreflang_invalid_language_code",
+	"hreflang_outside_head",
+
+	// Medium: Sitemap
+	"non_indexable_in_sitemap",
+	"url_in_multiple_sitemaps",
+	"sitemap_too_large",
+
+	// Medium: HTML Validation
+	"invalid_html_in_head",
+	"multiple_head_tags",
+	"multiple_body_tags",
+	"html_too_large",
+
+	// Medium: Content
+	"lorem_ipsum_detected",
+	"soft_404",
+
 	// Engine-level
 	"crawl_trap_suspected",
 	"rate_limited",

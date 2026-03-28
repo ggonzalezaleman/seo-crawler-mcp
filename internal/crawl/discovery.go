@@ -20,6 +20,7 @@ type DiscoveredEdge struct {
 	DiscoveryMode       string `json:"discovery_mode"`
 	AnchorText          string `json:"anchor_text"`
 	IsInternal          bool   `json:"is_internal"`
+	TargetAttr          string `json:"target_attr,omitempty"` // e.g. "_blank"
 }
 
 // BuildEdges takes parser output and produces typed edges.
@@ -48,6 +49,7 @@ func BuildEdges(
 		}
 		edge.AnchorText = link.AnchorText
 		edge.RelFlagsJSON = parseRelFlags(link.Rel)
+		edge.TargetAttr = link.Target
 		edges = append(edges, *edge)
 	}
 

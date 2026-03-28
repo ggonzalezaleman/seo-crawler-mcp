@@ -607,19 +607,32 @@ func (e *Engine) processParseResult(
 	var nonDescriptiveCount int
 	var nonDescriptiveExamples []string
 	var internalNofollowCount int
+	var unsafeCrossOriginCount int
+	var unsafeCrossOriginExamples []string
 	for _, edge := range pr.edges {
-		if !edge.IsInternal || edge.RelationType != "link" {
+		if edge.RelationType != "link" {
 			continue
 		}
-		internalOutlinkCount++
-		if issues.IsNonDescriptiveAnchor(edge.AnchorText) {
-			nonDescriptiveCount++
-			if len(nonDescriptiveExamples) < 5 {
-				nonDescriptiveExamples = append(nonDescriptiveExamples, strings.TrimSpace(edge.AnchorText))
+		if edge.IsInternal {
+			internalOutlinkCount++
+			if issues.IsNonDescriptiveAnchor(edge.AnchorText) {
+				nonDescriptiveCount++
+				if len(nonDescriptiveExamples) < 5 {
+					nonDescriptiveExamples = append(nonDescriptiveExamples, strings.TrimSpace(edge.AnchorText))
+				}
 			}
-		}
-		if strings.Contains(strings.ToLower(edge.RelFlagsJSON), "nofollow") {
-			internalNofollowCount++
+			if strings.Contains(strings.ToLower(edge.RelFlagsJSON), "nofollow") {
+				internalNofollowCount++
+			}
+		} else {
+			// Check external links for unsafe cross-origin (target=_blank without noopener/noreferrer)
+			relLower := strings.ToLower(edge.RelFlagsJSON)
+			if edge.TargetAttr == "_blank" && !strings.Contains(relLower, "noopener") && !strings.Contains(relLower, "noreferrer") {
+				unsafeCrossOriginCount++
+				if len(unsafeCrossOriginExamples) < 5 {
+					unsafeCrossOriginExamples = append(unsafeCrossOriginExamples, edge.DeclaredTargetURL)
+				}
+			}
 		}
 	}
 
@@ -669,6 +682,18 @@ func (e *Engine) processParseResult(
 		NonDescriptiveAnchorExamples:  nonDescriptiveExamples,
 		InternalNofollowCount:         internalNofollowCount,
 		PageURL:                       fr.url,
+		ResponseHeaders:               fr.result.ResponseHeaders,
+		Hreflangs:                     page.Hreflangs,
+		FormInsecureActions:           page.FormInsecureActions,
+		ProtocolRelativeCount:         page.ProtocolRelativeCount,
+		HreflangOutsideHead:           page.HreflangOutsideHead,
+		InvalidHTMLInHead:             page.InvalidHTMLInHead,
+		HeadTagCount:                  page.HeadTagCount,
+		BodyTagCount:                  page.BodyTagCount,
+		BodySize:                      fr.result.BodySize,
+		TextContent:                   page.ExtractedText,
+		UnsafeCrossOriginCount:        unsafeCrossOriginCount,
+		UnsafeCrossOriginExamples:     unsafeCrossOriginExamples,
 	}
 	pr.issues = issues.DetectPageLocalIssues(pageCtx, thresholds, fr.depth)
 

@@ -66,6 +66,7 @@ type DiscoveredLink struct {
 	URL        string `json:"url"`
 	AnchorText string `json:"anchorText"`
 	Rel        string `json:"rel,omitempty"`
+	Target     string `json:"target,omitempty"` // e.g. "_blank"
 }
 
 // DiscoveredImage represents an image found in the page.
@@ -122,6 +123,15 @@ type ParseResult struct {
 	H1AltTextOnly             []string // alt texts from H1s that contain only an <img>
 	CanonicalCount            int
 	CanonicalOutsideHead      bool
+
+	// Medium-priority detectors
+	FormInsecureActions       []string // form action URLs starting with "http://"
+	ProtocolRelativeCount     int      // count of href/src attributes starting with "//"
+	HreflangOutsideHead      bool     // hreflang link tags found in <body>
+	InvalidHTMLInHead        []string // non-standard elements found in <head> (div, span, p, etc.)
+	HeadTagCount              int      // number of <head> elements
+	BodyTagCount              int      // number of <body> elements
+	ExtractedText             string   // visible text content (for content checks like lorem ipsum)
 }
 
 // ParseHTML extracts SEO metadata from raw HTML bytes.
@@ -299,11 +309,17 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 		}
 		resolved := resolveURL(baseURL, href)
 		rel, _ := s.Attr("rel")
+		target, _ := s.Attr("target")
 		r.Links = append(r.Links, DiscoveredLink{
 			URL:        resolved,
 			AnchorText: strings.TrimSpace(s.Text()),
 			Rel:        rel,
+			Target:     target,
 		})
+		// Count protocol-relative URLs
+		if strings.HasPrefix(href, "//") {
+			r.ProtocolRelativeCount++
+		}
 	})
 
 	// Images
@@ -434,6 +450,7 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 	// Word counts
 	allText := ExtractVisibleText(doc)
 	r.ExtractedWordCount = CountWords(allText)
+	r.ExtractedText = allText
 
 	mainText := ExtractMainContentText(doc)
 	r.MainContentWordCount = CountWords(mainText)
@@ -498,6 +515,51 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 			r.H1AltTextOnly = append(r.H1AltTextOnly, imgAlt)
 		}
 	})
+
+	// Protocol-relative URLs in images and assets
+	doc.Find("img[src]").Each(func(_ int, s *goquery.Selection) {
+		if src, ok := s.Attr("src"); ok && strings.HasPrefix(strings.TrimSpace(src), "//") {
+			r.ProtocolRelativeCount++
+		}
+	})
+	doc.Find("script[src], link[href]").Each(func(_ int, s *goquery.Selection) {
+		src := s.AttrOr("src", "")
+		if src == "" {
+			src = s.AttrOr("href", "")
+		}
+		if strings.HasPrefix(strings.TrimSpace(src), "//") {
+			r.ProtocolRelativeCount++
+		}
+	})
+
+	// Insecure form actions
+	r.FormInsecureActions = make([]string, 0)
+	doc.Find("form[action]").Each(func(_ int, s *goquery.Selection) {
+		action, _ := s.Attr("action")
+		if strings.HasPrefix(strings.TrimSpace(strings.ToLower(action)), "http://") {
+			r.FormInsecureActions = append(r.FormInsecureActions, strings.TrimSpace(action))
+		}
+	})
+
+	// Hreflang outside head
+	doc.Find("body link[rel='alternate'][hreflang]").Each(func(_ int, s *goquery.Selection) {
+		r.HreflangOutsideHead = true
+	})
+
+	// Invalid HTML in head
+	r.InvalidHTMLInHead = make([]string, 0)
+	invalidInHead := map[string]bool{}
+	doc.Find("head div, head span, head p, head section, head article, head main, head footer, head header, head nav").Each(func(_ int, s *goquery.Selection) {
+		tagName := goquery.NodeName(s)
+		if !invalidInHead[tagName] {
+			invalidInHead[tagName] = true
+			r.InvalidHTMLInHead = append(r.InvalidHTMLInHead, tagName)
+		}
+	})
+
+	// Head and body tag counts
+	r.HeadTagCount = doc.Find("head").Length()
+	r.BodyTagCount = doc.Find("body").Length()
 
 	return r, nil
 }

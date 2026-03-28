@@ -54,6 +54,9 @@ func DetectGlobalIssues(db *storage.DB, jobID string, cfg GlobalConfig) (int, er
 		detectJSOnlyNavigation,
 		detectImageOver100KB,
 		detectNoInternalOutlinks,
+		detectNonIndexableInSitemap,
+		detectURLInMultipleSitemaps,
+		detectSitemapTooLarge,
 	}
 
 	var total int
@@ -1202,6 +1205,130 @@ func detectNonIndexableCanonical(db *storage.DB, jobID string, _ GlobalConfig) (
 		total++
 	}
 	return total, nil
+}
+
+// detectNonIndexableInSitemap finds URLs in sitemap that are not indexable.
+func detectNonIndexableInSitemap(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT se.url, p.indexability_state, u.id
+		FROM sitemap_entries se
+		JOIN urls u ON u.job_id = se.job_id AND u.normalized_url = se.url
+		JOIN pages p ON p.job_id = se.job_id AND p.url_id = u.id
+		WHERE se.job_id = ? AND p.indexability_state != 'indexable'
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying non_indexable_in_sitemap: %w", err)
+	}
+	defer rows.Close()
+
+	type entry struct {
+		url               string
+		indexabilityState string
+		urlID             int64
+	}
+	entries := []entry{}
+	for rows.Next() {
+		var e entry
+		if err := rows.Scan(&e.url, &e.indexabilityState, &e.urlID); err != nil {
+			return 0, fmt.Errorf("scanning non_indexable_in_sitemap: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating non_indexable_in_sitemap: %w", err)
+	}
+
+	for _, e := range entries {
+		if err := insertGlobalIssue(db, jobID, &e.urlID, "non_indexable_in_sitemap", "warning", map[string]any{
+			"url":               e.url,
+			"indexabilityState": e.indexabilityState,
+		}); err != nil {
+			return 0, err
+		}
+	}
+	return len(entries), nil
+}
+
+// detectURLInMultipleSitemaps finds URLs that appear in more than one sitemap file.
+func detectURLInMultipleSitemaps(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT se.url, COUNT(DISTINCT se.source_sitemap_url) as sitemap_count
+		FROM sitemap_entries se
+		WHERE se.job_id = ?
+		GROUP BY se.url
+		HAVING sitemap_count > 1
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying url_in_multiple_sitemaps: %w", err)
+	}
+	defer rows.Close()
+
+	type multiEntry struct {
+		url          string
+		sitemapCount int
+	}
+	entries := []multiEntry{}
+	for rows.Next() {
+		var e multiEntry
+		if err := rows.Scan(&e.url, &e.sitemapCount); err != nil {
+			return 0, fmt.Errorf("scanning url_in_multiple_sitemaps: %w", err)
+		}
+		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating url_in_multiple_sitemaps: %w", err)
+	}
+
+	for _, e := range entries {
+		if err := insertGlobalIssue(db, jobID, nil, "url_in_multiple_sitemaps", "info", map[string]any{
+			"url":          e.url,
+			"sitemapCount": e.sitemapCount,
+		}); err != nil {
+			return 0, err
+		}
+	}
+	return len(entries), nil
+}
+
+// detectSitemapTooLarge finds sitemaps with more than 50K entries.
+func detectSitemapTooLarge(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT se.source_sitemap_url, COUNT(*) as entry_count
+		FROM sitemap_entries se
+		WHERE se.job_id = ?
+		GROUP BY se.source_sitemap_url
+		HAVING entry_count > 50000
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying sitemap_too_large: %w", err)
+	}
+	defer rows.Close()
+
+	type largeSitemap struct {
+		sitemapURL string
+		entryCount int
+	}
+	sitemaps := []largeSitemap{}
+	for rows.Next() {
+		var s largeSitemap
+		if err := rows.Scan(&s.sitemapURL, &s.entryCount); err != nil {
+			return 0, fmt.Errorf("scanning sitemap_too_large: %w", err)
+		}
+		sitemaps = append(sitemaps, s)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating sitemap_too_large: %w", err)
+	}
+
+	for _, s := range sitemaps {
+		if err := insertGlobalIssue(db, jobID, nil, "sitemap_too_large", "warning", map[string]any{
+			"sitemapUrl": s.sitemapURL,
+			"entryCount": s.entryCount,
+		}); err != nil {
+			return 0, err
+		}
+	}
+	return len(sitemaps), nil
 }
 
 // detectUnlinkedCanonical finds canonical URLs that have zero inbound internal link edges.
