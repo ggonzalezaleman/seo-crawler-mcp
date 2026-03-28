@@ -21,6 +21,7 @@ import (
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/fetcher"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/frontier"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/issues"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/materialize"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/parser"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/renderer"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/robots"
@@ -510,6 +511,23 @@ loop:
 	// --- Post-crawl: HEAD-check discovered image assets ---
 	if completionErr == nil {
 		e.headCheckAssets(ctx, jobID)
+	}
+
+	// --- Post-crawl: global issue detection + materialization ---
+	if completionErr == nil {
+		globalCfg := issues.DefaultGlobalConfig()
+		globalCount, globalErr := issues.DetectGlobalIssues(e.db, jobID, globalCfg)
+		if globalErr != nil {
+			log.Printf("engine: global issue detection failed: %v", globalErr)
+		} else {
+			issuesFound.Add(int64(globalCount))
+			log.Printf("engine: detected %d global issues", globalCount)
+		}
+
+		// Materialize canonical clusters, duplicate clusters, URL groups
+		if matErr := materialize.Materialize(e.db, jobID); matErr != nil {
+			log.Printf("engine: materialization failed: %v", matErr)
+		}
 	}
 
 	// Update final counters
