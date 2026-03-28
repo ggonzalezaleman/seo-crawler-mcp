@@ -1,0 +1,84 @@
+package fetcher
+
+import (
+	"sync"
+	"time"
+)
+
+// hostState holds the semaphore and crawl-delay state for a single host.
+type hostState struct {
+	sem       chan struct{}
+	mu        sync.Mutex
+	delay     time.Duration
+	lastFetch time.Time
+}
+
+// RateLimiter enforces per-host concurrency limits and crawl delays.
+type RateLimiter struct {
+	perHost int
+	hosts   sync.Map // map[string]*hostState
+}
+
+// NewRateLimiter creates a rate limiter with the given per-host concurrency.
+func NewRateLimiter(perHostConcurrency int) *RateLimiter {
+	if perHostConcurrency < 1 {
+		perHostConcurrency = 1
+	}
+	return &RateLimiter{
+		perHost: perHostConcurrency,
+	}
+}
+
+func (rl *RateLimiter) getState(host string) *hostState {
+	val, ok := rl.hosts.Load(host)
+	if ok {
+		return val.(*hostState)
+	}
+
+	sem := make(chan struct{}, rl.perHost)
+	for range rl.perHost {
+		sem <- struct{}{}
+	}
+
+	state := &hostState{sem: sem}
+	actual, loaded := rl.hosts.LoadOrStore(host, state)
+	if loaded {
+		return actual.(*hostState)
+	}
+	return state
+}
+
+// Acquire blocks until a slot is available for the host, respecting crawl delay.
+func (rl *RateLimiter) Acquire(host string) {
+	state := rl.getState(host)
+
+	// Wait for semaphore slot.
+	<-state.sem
+
+	// Enforce crawl delay.
+	state.mu.Lock()
+	if state.delay > 0 && !state.lastFetch.IsZero() {
+		elapsed := time.Since(state.lastFetch)
+		if elapsed < state.delay {
+			state.mu.Unlock()
+			time.Sleep(state.delay - elapsed)
+			state.mu.Lock()
+		}
+	}
+	state.lastFetch = time.Now()
+	state.mu.Unlock()
+}
+
+// Release returns a slot for the host.
+func (rl *RateLimiter) Release(host string) {
+	state := rl.getState(host)
+	state.sem <- struct{}{}
+}
+
+// SetCrawlDelay sets the minimum delay between requests to a host (from robots.txt).
+func (rl *RateLimiter) SetCrawlDelay(host string, delay time.Duration) {
+	state := rl.getState(host)
+	state.mu.Lock()
+	state.delay = delay
+	state.mu.Unlock()
+}
