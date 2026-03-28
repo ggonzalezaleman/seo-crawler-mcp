@@ -105,3 +105,30 @@ func (db *DB) GetFetchByURL(jobID string, urlID int64) (*Fetch, error) {
 
 	return &f, nil
 }
+
+// GetRedirectHopsByFetch returns redirect hops for a specific fetch, ordered by hop index.
+func (db *DB) GetRedirectHopsByFetch(fetchID int64) ([]RedirectHop, error) {
+	rows, err := db.Query(
+		`SELECT id, job_id, fetch_id, hop_index, status_code, from_url, to_url
+		 FROM redirect_hops WHERE fetch_id = ? ORDER BY hop_index ASC`,
+		fetchID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying redirect hops for fetch %d: %w", fetchID, err)
+	}
+	defer rows.Close()
+
+	hops := []RedirectHop{}
+	for rows.Next() {
+		var h RedirectHop
+		if err := rows.Scan(&h.ID, &h.JobID, &h.FetchID, &h.HopIndex, &h.StatusCode, &h.FromURL, &h.ToURL); err != nil {
+			return nil, fmt.Errorf("scanning redirect hop: %w", err)
+		}
+		hops = append(hops, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating redirect hops: %w", err)
+	}
+
+	return hops, nil
+}

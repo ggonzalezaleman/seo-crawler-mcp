@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/config"
@@ -21,6 +23,8 @@ func readResource(t *testing.T, s *Server, uri string) []gomcp.ResourceContents 
 	switch {
 	case uri == "seo-crawler://jobs":
 		contents, err = s.handleJobListResource(context.Background(), req)
+	case strings.Contains(uri, "/page/"):
+		contents, err = s.handlePageDetailResource(context.Background(), req)
 	case len(uri) > len("seo-crawler://jobs/") && !containsSuffix(uri):
 		contents, err = s.handleJobDetailResource(context.Background(), req)
 	case hasSuffix(uri, "/summary"):
@@ -204,6 +208,99 @@ func TestJobEventsResource(t *testing.T) {
 	}
 	if events[1].EventType != "crawl_started" {
 		t.Errorf("expected second event type %q, got %q", "crawl_started", events[1].EventType)
+	}
+}
+
+func TestPageDetailResource(t *testing.T) {
+	db := setupTestDB(t)
+	cfg := config.DefaultConfig()
+	s := NewServer(ServerConfig{DB: db, Config: &cfg})
+
+	job, err := db.CreateJob("crawl", `{}`, `["https://example.com"]`)
+	if err != nil {
+		t.Fatalf("creating job: %v", err)
+	}
+
+	// Insert a URL
+	urlID, err := db.UpsertURL(job.ID, "https://example.com", "example.com", "crawled", true, "seed")
+	if err != nil {
+		t.Fatalf("inserting URL: %v", err)
+	}
+
+	// Insert an issue for this URL
+	_, err = db.InsertIssue(storage.IssueInput{
+		JobID:     job.ID,
+		URLID:     &urlID,
+		IssueType: "missing_title",
+		Severity:  "warning",
+		Scope:     "page",
+	})
+	if err != nil {
+		t.Fatalf("inserting issue: %v", err)
+	}
+
+	uri := fmt.Sprintf("seo-crawler://jobs/%s/page/%d", job.ID, urlID)
+	contents := readResource(t, s, uri)
+	text := textFromContents(t, contents)
+
+	var detail pageDetailPayload
+	if err := json.Unmarshal([]byte(text), &detail); err != nil {
+		t.Fatalf("parsing page detail JSON: %v", err)
+	}
+
+	if detail.URL == nil {
+		t.Fatal("expected URL to be non-nil")
+	}
+	if detail.URL.ID != urlID {
+		t.Errorf("expected URL ID %d, got %d", urlID, detail.URL.ID)
+	}
+	if len(detail.Issues) != 1 {
+		t.Fatalf("expected 1 issue, got %d", len(detail.Issues))
+	}
+	if detail.Issues[0].IssueType != "missing_title" {
+		t.Errorf("expected issue type %q, got %q", "missing_title", detail.Issues[0].IssueType)
+	}
+	// OutboundEdges and InboundEdges should be empty arrays (not nil)
+	if detail.OutboundEdges == nil {
+		t.Error("expected outboundEdges to be non-nil empty slice")
+	}
+	if detail.InboundEdges == nil {
+		t.Error("expected inboundEdges to be non-nil empty slice")
+	}
+	if detail.RedirectHops == nil {
+		t.Error("expected redirectHops to be non-nil empty slice")
+	}
+}
+
+func TestExtractURLID(t *testing.T) {
+	tests := []struct {
+		uri      string
+		wantJob  string
+		wantURL  int64
+		wantOK   bool
+	}{
+		{"seo-crawler://jobs/abc123/page/42", "abc123", 42, true},
+		{"seo-crawler://jobs/abc123/page/0", "abc123", 0, true},
+		{"seo-crawler://jobs/abc123/page/", "", 0, false},
+		{"seo-crawler://jobs//page/42", "", 0, false},
+		{"seo-crawler://jobs/abc123/page/notanumber", "", 0, false},
+		{"invalid://uri", "", 0, false},
+	}
+
+	for _, tt := range tests {
+		jobID, urlID, err := extractURLID(tt.uri)
+		if tt.wantOK && err != nil {
+			t.Errorf("extractURLID(%q): unexpected error: %v", tt.uri, err)
+		}
+		if !tt.wantOK && err == nil {
+			t.Errorf("extractURLID(%q): expected error, got job=%q url=%d", tt.uri, jobID, urlID)
+		}
+		if jobID != tt.wantJob {
+			t.Errorf("extractURLID(%q) jobID = %q, want %q", tt.uri, jobID, tt.wantJob)
+		}
+		if urlID != tt.wantURL {
+			t.Errorf("extractURLID(%q) urlID = %d, want %d", tt.uri, urlID, tt.wantURL)
+		}
 	}
 }
 

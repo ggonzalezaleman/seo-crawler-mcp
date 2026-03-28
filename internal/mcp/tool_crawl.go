@@ -168,6 +168,12 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 		return gomcp.NewToolResultError(fmt.Sprintf("creating job: %v", err)), nil
 	}
 
+	// Notify clients that the resource list changed (new job created)
+	s.mcpServer.SendNotificationToAllClients(gomcp.MethodNotificationResourcesListChanged, nil)
+
+	// Log the crawl start event
+	s.logInfo(ctx, fmt.Sprintf("Created crawl job %s for %s (maxPages=%d, scope=%s)", job.ID, rawURL, maxPages, scopeMode))
+
 	// Start crawl in background (non-dryRun).
 	// NOTE: We do NOT mutate s.config here — that would be a data race.
 	// Per-job config is already stored in the job's config_json field above.
@@ -175,6 +181,10 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 	if !dryRun && s.engine != nil {
 		go func() {
 			_ = s.engine.RunCrawl(context.Background(), job.ID)
+			// Notify clients when crawl completes
+			s.mcpServer.SendNotificationToAllClients(gomcp.MethodNotificationResourceUpdated, map[string]any{
+				"uri": fmt.Sprintf("seo-crawler://jobs/%s", job.ID),
+			})
 		}()
 	}
 
@@ -264,6 +274,14 @@ func (s *Server) handleCancelCrawl(ctx context.Context, req gomcp.CallToolReques
 	if err := s.db.UpdateJobStatus(jobID, "cancelling"); err != nil {
 		return gomcp.NewToolResultError(fmt.Sprintf("cancelling job %q: %v", jobID, err)), nil
 	}
+
+	// Notify clients that the job resource was updated
+	s.mcpServer.SendNotificationToAllClients(gomcp.MethodNotificationResourceUpdated, map[string]any{
+		"uri": fmt.Sprintf("seo-crawler://jobs/%s", jobID),
+	})
+
+	// Log the cancellation event
+	s.logInfo(ctx, fmt.Sprintf("Cancelling crawl job %s", jobID))
 
 	result := map[string]string{
 		"jobId":  jobID,

@@ -2,10 +2,13 @@
 package mcp
 
 import (
+	"context"
+
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/config"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/engine"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/fetcher"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
+	gomcp "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 
@@ -59,4 +62,11 @@ func (s *Server) ServeStdio() error {
 // MCPServer returns the underlying MCPServer for testing.
 func (s *Server) MCPServer() *mcpserver.MCPServer {
 	return s.mcpServer
+}
+
+// logInfo sends an info-level log message to the current client session.
+// Errors are silently ignored (logging is best-effort).
+func (s *Server) logInfo(ctx context.Context, message string) {
+	notification := gomcp.NewLoggingMessageNotification(gomcp.LoggingLevelInfo, "seo-crawler", message)
+	_ = s.mcpServer.SendLogMessageToClient(ctx, notification)
 }

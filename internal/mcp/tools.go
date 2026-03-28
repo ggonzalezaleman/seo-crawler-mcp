@@ -8,6 +8,8 @@ import (
 var (
 	crawlSiteTool = gomcp.NewTool("crawl_site",
 		gomcp.WithDescription("Start a new site crawl. Returns a job ID for tracking progress."),
+		gomcp.WithReadOnlyHintAnnotation(false),
+		gomcp.WithOpenWorldHintAnnotation(true),
 		gomcp.WithString("url", gomcp.Required(), gomcp.Description("Seed URL to begin crawling")),
 		gomcp.WithArray("urls", gomcp.Description("Additional seed URLs"), gomcp.WithStringItems()),
 		gomcp.WithString("scopeMode", gomcp.Description("Crawl scope boundary"), gomcp.Enum("registrable_domain", "exact_host", "allowlist")),
@@ -21,21 +23,29 @@ var (
 
 	crawlStatusTool = gomcp.NewTool("crawl_status",
 		gomcp.WithDescription("Get the current status and progress of a crawl job."),
+		gomcp.WithReadOnlyHintAnnotation(true),
+		gomcp.WithOpenWorldHintAnnotation(false),
 		gomcp.WithString("jobId", gomcp.Required(), gomcp.Description("Crawl job ID")),
 	)
 
 	cancelCrawlTool = gomcp.NewTool("cancel_crawl",
 		gomcp.WithDescription("Cancel a running crawl job."),
+		gomcp.WithReadOnlyHintAnnotation(false),
+		gomcp.WithOpenWorldHintAnnotation(false),
 		gomcp.WithString("jobId", gomcp.Required(), gomcp.Description("Crawl job ID to cancel")),
 	)
 
 	getCrawlSummaryTool = gomcp.NewTool("get_crawl_summary",
 		gomcp.WithDescription("Get a high-level summary of crawl results including issue counts and page statistics."),
+		gomcp.WithReadOnlyHintAnnotation(true),
+		gomcp.WithOpenWorldHintAnnotation(false),
 		gomcp.WithString("jobId", gomcp.Required(), gomcp.Description("Crawl job ID")),
 	)
 
 	getCrawlResultsTool = gomcp.NewTool("get_crawl_results",
 		gomcp.WithDescription("Query detailed crawl results with filtering and pagination."),
+		gomcp.WithReadOnlyHintAnnotation(true),
+		gomcp.WithOpenWorldHintAnnotation(false),
 		gomcp.WithString("jobId", gomcp.Required(), gomcp.Description("Crawl job ID")),
 		gomcp.WithString("view", gomcp.Description("Result view: pages, issues, external_links, response_codes"), gomcp.Enum("pages", "issues", "external_links", "response_codes")),
 		gomcp.WithNumber("limit", gomcp.Description("Maximum results to return (default 50, max 500)")),
@@ -53,6 +63,8 @@ var (
 
 	getLinkGraphTool = gomcp.NewTool("get_link_graph",
 		gomcp.WithDescription("Get the link graph (edges) for a crawl job, centered on a specific URL."),
+		gomcp.WithReadOnlyHintAnnotation(true),
+		gomcp.WithOpenWorldHintAnnotation(false),
 		gomcp.WithString("jobId", gomcp.Required(), gomcp.Description("Crawl job ID")),
 		gomcp.WithNumber("urlId", gomcp.Required(), gomcp.Description("URL ID to query edges for")),
 		gomcp.WithString("direction", gomcp.Description("Edge direction: inbound, outbound, both"), gomcp.Enum("outbound", "inbound", "both")),
@@ -64,18 +76,24 @@ var (
 
 	analyzeURLTool = gomcp.NewTool("analyze_url",
 		gomcp.WithDescription("Analyze a single URL for SEO issues without a full crawl."),
+		gomcp.WithReadOnlyHintAnnotation(false),
+		gomcp.WithOpenWorldHintAnnotation(true),
 		gomcp.WithString("url", gomcp.Required(), gomcp.Description("URL to analyze")),
 		gomcp.WithString("renderMode", gomcp.Description("Rendering strategy"), gomcp.Enum("static", "browser")),
 	)
 
 	checkRedirectsTool = gomcp.NewTool("check_redirects",
 		gomcp.WithDescription("Follow and report the redirect chain for a URL."),
+		gomcp.WithReadOnlyHintAnnotation(true),
+		gomcp.WithOpenWorldHintAnnotation(true),
 		gomcp.WithString("url", gomcp.Required(), gomcp.Description("URL to check redirects for")),
 		gomcp.WithNumber("maxHops", gomcp.Description("Maximum redirect hops to follow (default 10)")),
 	)
 
 	checkRobotsTxtTool = gomcp.NewTool("check_robots_txt",
 		gomcp.WithDescription("Fetch and parse robots.txt for a given host."),
+		gomcp.WithReadOnlyHintAnnotation(true),
+		gomcp.WithOpenWorldHintAnnotation(true),
 		gomcp.WithString("url", gomcp.Required(), gomcp.Description("URL whose host's robots.txt to check")),
 		gomcp.WithString("userAgent", gomcp.Description("User-agent to test rules against")),
 		gomcp.WithArray("testPaths", gomcp.Description("Paths to test against robots.txt rules"), gomcp.WithStringItems()),
@@ -83,6 +101,8 @@ var (
 
 	parseSitemapTool = gomcp.NewTool("parse_sitemap",
 		gomcp.WithDescription("Parse a sitemap XML and return its entries."),
+		gomcp.WithReadOnlyHintAnnotation(true),
+		gomcp.WithOpenWorldHintAnnotation(true),
 		gomcp.WithString("url", gomcp.Required(), gomcp.Description("Sitemap URL to parse")),
 		gomcp.WithNumber("maxEntries", gomcp.Description("Maximum entries to return (default 10000)")),
 	)
