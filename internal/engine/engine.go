@@ -977,24 +977,44 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 			break
 		}
 
-		renderResult, renderErr := e.renderer.RenderWithOptions(ctx, kp.url, renderer.RenderOptions{
-			DiscoverMenus: true,
-		})
-		if renderErr != nil {
-			log.Printf("engine: sitemap gap: render failed for %s: %v", kp.url, renderErr)
-			continue
+		// Try Playwright first (better menu discovery via real click handlers),
+		// fall back to chromedp if Playwright is unavailable or fails.
+		var renderHTML string
+		var renderFinalURL string
+
+		if renderer.IsPlaywrightAvailable() {
+			pwResult, pwErr := renderer.RenderWithPlaywright(ctx, kp.url)
+			if pwErr != nil {
+				log.Printf("engine: sitemap gap: playwright render failed for %s: %v, falling back to chromedp", kp.url, pwErr)
+			} else {
+				renderHTML = pwResult.HTML
+				renderFinalURL = kp.url // Playwright script doesn't track redirects; use original URL
+			}
+		}
+
+		// Chromedp fallback
+		if renderHTML == "" {
+			renderResult, renderErr := e.renderer.RenderWithOptions(ctx, kp.url, renderer.RenderOptions{
+				DiscoverMenus: true,
+			})
+			if renderErr != nil {
+				log.Printf("engine: sitemap gap: render failed for %s: %v", kp.url, renderErr)
+				continue
+			}
+			renderHTML = renderResult.HTML
+			renderFinalURL = renderResult.FinalURL
 		}
 		pagesReRendered++
 
 		// Parse the rendered HTML
-		page, parseErr := parser.ParseHTML([]byte(renderResult.HTML), renderResult.FinalURL, http.Header{})
+		page, parseErr := parser.ParseHTML([]byte(renderHTML), renderFinalURL, http.Header{})
 		if parseErr != nil {
 			log.Printf("engine: sitemap gap: parse failed for rendered %s: %v", kp.url, parseErr)
 			continue
 		}
 
 		// Build edges from rendered DOM
-		renderedEdges := crawl.BuildEdges(kp.urlID, renderResult.FinalURL, page, e.scopeChecker, "browser")
+		renderedEdges := crawl.BuildEdges(kp.urlID, renderFinalURL, page, e.scopeChecker, "browser")
 
 		// Find NEW links: in rendered edges but not already in static edges for this source
 		existingEdges := map[string]bool{}
