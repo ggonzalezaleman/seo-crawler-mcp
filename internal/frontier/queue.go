@@ -59,6 +59,16 @@ func (q *Queue) Len() int {
 	return len(q.h)
 }
 
+// Peek returns the first item without removing it.
+func (q *Queue) Peek() Item {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.h) == 0 {
+		return Item{}
+	}
+	return q.h[0]
+}
+
 // Contains returns true if the given urlID has been pushed (even if already popped).
 func (q *Queue) Contains(urlID int64) bool {
 	q.mu.Lock()

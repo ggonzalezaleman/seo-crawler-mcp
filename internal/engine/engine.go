@@ -137,6 +137,35 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 		return e.failJob(jobID, fmt.Errorf("no valid seed URLs"))
 	}
 
+	// Create scope checker from first seed if not provided via config.
+	if e.scopeChecker == nil {
+		first := q.Peek()
+		scopeMode := "registrable_domain"
+		var allowedHosts []string
+		if e.config != nil {
+			scopeMode = string(e.config.ScopeMode)
+			allowedHosts = e.config.AllowedHosts
+		}
+		// Try to parse from job config_json as well.
+		var jobCfg struct {
+			ScopeMode    string   `json:"scopeMode"`
+			AllowedHosts []string `json:"allowedHosts"`
+		}
+		if err := json.Unmarshal([]byte(job.ConfigJSON), &jobCfg); err == nil {
+			if jobCfg.ScopeMode != "" {
+				scopeMode = jobCfg.ScopeMode
+			}
+			if len(jobCfg.AllowedHosts) > 0 {
+				allowedHosts = jobCfg.AllowedHosts
+			}
+		}
+		sc, err := urlutil.NewScopeChecker(scopeMode, first.Host, allowedHosts)
+		if err != nil {
+			return e.failJob(jobID, fmt.Errorf("creating scope checker: %w", err))
+		}
+		e.scopeChecker = sc
+	}
+
 	// Channels
 	// fetchQueue feeds items from the dispatcher to fetcher workers.
 	fetchQueue := make(chan frontier.Item, 64)
