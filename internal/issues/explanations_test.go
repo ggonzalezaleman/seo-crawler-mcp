@@ -42,6 +42,38 @@ var allKnownIssueTypes = []string{
 	"js_suspect_not_rendered",
 	"title_outside_head",
 	"meta_robots_outside_head",
+	"title_same_as_h1",
+	"multiple_title_tags",
+	"multiple_meta_descriptions",
+	"meta_description_outside_head",
+	"h1_too_long",
+	"h1_non_sequential",
+	"h1_alt_text_only",
+	"missing_h2",
+	"h2_non_sequential",
+	"h2_too_long",
+	"multiple_canonicals",
+	"canonical_is_relative",
+	"canonical_outside_head",
+
+	// Batch B: Image issues (page-local + global)
+	"image_over_100kb",
+	"alt_text_too_long",
+	"missing_image_size_attributes",
+
+	// Batch B: Link issues (page-local + global)
+	"no_internal_outlinks",
+	"non_descriptive_anchor_text",
+	"internal_nofollow_outlink",
+
+	// Batch B: URL issues (page-local)
+	"url_uppercase",
+	"url_underscores",
+	"url_contains_space",
+	"url_has_parameters",
+	"url_too_long",
+	"url_multiple_slashes",
+	"url_repetitive_path",
 
 	// Global (DetectGlobalIssues)
 	"duplicate_title",
@@ -61,6 +93,10 @@ var allKnownIssueTypes = []string{
 	"in_sitemap_robots_blocked",
 	"http_to_https_missing",
 	"js_only_navigation",
+	"duplicate_h1",
+	"duplicate_h2",
+	"non_indexable_canonical",
+	"unlinked_canonical",
 
 	// Engine-level
 	"crawl_trap_suspected",

@@ -70,7 +70,10 @@ func seedPage(t *testing.T, db *storage.DB, jobID string, urlID, fetchID int64, 
 		indexability = v
 	}
 
-	result, err := db.Exec(`INSERT INTO pages (job_id, url_id, fetch_id, depth, title, title_length, meta_description, meta_description_length, content_hash, inbound_edge_count, canonical_url, canonical_status_code, hreflang_json, rel_next_url, rel_prev_url, indexability_state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	h1JSON, _ := opts["h1_json"].(string)
+	h2JSON, _ := opts["h2_json"].(string)
+
+	result, err := db.Exec(`INSERT INTO pages (job_id, url_id, fetch_id, depth, title, title_length, meta_description, meta_description_length, content_hash, inbound_edge_count, canonical_url, canonical_status_code, hreflang_json, rel_next_url, rel_prev_url, indexability_state, h1_json, h2_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		jobID, urlID, fetchID, depth,
 		nilIfEmpty(title), len(title),
 		nilIfEmpty(metaDesc), len(metaDesc),
@@ -80,6 +83,7 @@ func seedPage(t *testing.T, db *storage.DB, jobID string, urlID, fetchID int64, 
 		nilIfEmpty(hreflangJSON),
 		nilIfEmpty(relNextURL), nilIfEmpty(relPrevURL),
 		indexability,
+		nilIfEmpty(h1JSON), nilIfEmpty(h2JSON),
 	)
 	if err != nil {
 		t.Fatalf("seeding page: %v", err)
@@ -322,6 +326,10 @@ func TestCleanCrawl_NoGlobalIssues(t *testing.T) {
 		"canonical_status_code": 200,
 	})
 
+	// Add internal edges so pages have outlinks
+	seedEdge(t, db, jobID, u1, "https://example.com/about", "link", true, "static")
+	seedEdge(t, db, jobID, u2, "https://example.com/", "link", true, "static")
+
 	// Add sitemap entries matching crawled pages
 	db.Exec(`INSERT INTO sitemap_entries (job_id, url, source_sitemap_url, source_host) VALUES (?, ?, ?, ?)`,
 		jobID, "https://example.com/", "https://example.com/sitemap.xml", "example.com")
@@ -343,5 +351,149 @@ func TestCleanCrawl_NoGlobalIssues(t *testing.T) {
 			t.Logf("unexpected issue: type=%q severity=%q scope=%q", it, sev, sc)
 		}
 		t.Errorf("expected 0 global issues on clean crawl, got %d", n)
+	}
+}
+
+// ── Batch A global tests ───────────────────────────────────────────────
+
+func TestDetectDuplicateH1(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-dup-h1"
+	seedJob(t, db, jobID)
+
+	u1 := seedURL(t, db, jobID, "https://example.com/a", "example.com", "fetched", "seed")
+	u2 := seedURL(t, db, jobID, "https://example.com/b", "example.com", "fetched", "crawl")
+	u3 := seedURL(t, db, jobID, "https://example.com/c", "example.com", "fetched", "crawl")
+
+	f1 := seedFetch(t, db, jobID, 1, u1, 200)
+	f2 := seedFetch(t, db, jobID, 2, u2, 200)
+	f3 := seedFetch(t, db, jobID, 3, u3, 200)
+
+	seedPage(t, db, jobID, u1, f1, map[string]any{"title": "Page A", "h1_json": `["Welcome Home"]`})
+	seedPage(t, db, jobID, u2, f2, map[string]any{"title": "Page B", "h1_json": `["Welcome Home"]`})
+	seedPage(t, db, jobID, u3, f3, map[string]any{"title": "Page C", "h1_json": `["Unique H1"]`})
+
+	cfg := DefaultGlobalConfig()
+	n, err := detectDuplicateH1(db, jobID, cfg)
+	if err != nil {
+		t.Fatalf("detectDuplicateH1: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 duplicate_h1 issue, got %d", n)
+	}
+	if c := countIssuesByType(t, db, jobID, "duplicate_h1"); c != 1 {
+		t.Errorf("expected 1 issue in DB, got %d", c)
+	}
+}
+
+func TestDetectDuplicateH2(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-dup-h2"
+	seedJob(t, db, jobID)
+
+	u1 := seedURL(t, db, jobID, "https://example.com/a", "example.com", "fetched", "seed")
+	u2 := seedURL(t, db, jobID, "https://example.com/b", "example.com", "fetched", "crawl")
+
+	f1 := seedFetch(t, db, jobID, 1, u1, 200)
+	f2 := seedFetch(t, db, jobID, 2, u2, 200)
+
+	seedPage(t, db, jobID, u1, f1, map[string]any{"title": "Page A", "h2_json": `["Features"]`})
+	seedPage(t, db, jobID, u2, f2, map[string]any{"title": "Page B", "h2_json": `["Features"]`})
+
+	cfg := DefaultGlobalConfig()
+	n, err := detectDuplicateH2(db, jobID, cfg)
+	if err != nil {
+		t.Fatalf("detectDuplicateH2: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 duplicate_h2 issue, got %d", n)
+	}
+}
+
+func TestDetectNonIndexableCanonical(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-noindex-canon"
+	seedJob(t, db, jobID)
+
+	u1 := seedURL(t, db, jobID, "https://example.com/page", "example.com", "fetched", "seed")
+	u2 := seedURL(t, db, jobID, "https://example.com/target", "example.com", "fetched", "crawl")
+
+	f1 := seedFetch(t, db, jobID, 1, u1, 200)
+	f2 := seedFetch(t, db, jobID, 2, u2, 200)
+
+	seedPage(t, db, jobID, u1, f1, map[string]any{
+		"title":                 "Source Page",
+		"canonical_url":         "https://example.com/target",
+		"canonical_status_code": 200,
+	})
+	seedPage(t, db, jobID, u2, f2, map[string]any{
+		"title":             "Target Page",
+		"indexability_state": "noindex_meta",
+	})
+
+	cfg := DefaultGlobalConfig()
+	n, err := detectNonIndexableCanonical(db, jobID, cfg)
+	if err != nil {
+		t.Fatalf("detectNonIndexableCanonical: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 non_indexable_canonical issue, got %d", n)
+	}
+}
+
+func TestDetectUnlinkedCanonical(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-unlinked-canon"
+	seedJob(t, db, jobID)
+
+	u1 := seedURL(t, db, jobID, "https://example.com/page", "example.com", "fetched", "seed")
+	// The canonical target URL exists in urls but has no inbound link edges
+	seedURL(t, db, jobID, "https://example.com/canonical-target", "example.com", "fetched", "crawl")
+
+	f1 := seedFetch(t, db, jobID, 1, u1, 200)
+
+	seedPage(t, db, jobID, u1, f1, map[string]any{
+		"title":                 "Source Page",
+		"canonical_url":         "https://example.com/canonical-target",
+		"canonical_status_code": 200,
+	})
+
+	// No edges pointing to the canonical target
+
+	cfg := DefaultGlobalConfig()
+	n, err := detectUnlinkedCanonical(db, jobID, cfg)
+	if err != nil {
+		t.Fatalf("detectUnlinkedCanonical: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 unlinked_canonical issue, got %d", n)
+	}
+}
+
+func TestDetectUnlinkedCanonical_LinkedIsClean(t *testing.T) {
+	db := testDB(t)
+	jobID := "job-linked-canon"
+	seedJob(t, db, jobID)
+
+	u1 := seedURL(t, db, jobID, "https://example.com/page", "example.com", "fetched", "seed")
+	seedURL(t, db, jobID, "https://example.com/canonical-target", "example.com", "fetched", "crawl")
+
+	f1 := seedFetch(t, db, jobID, 1, u1, 200)
+	seedPage(t, db, jobID, u1, f1, map[string]any{
+		"title":                 "Source Page",
+		"canonical_url":         "https://example.com/canonical-target",
+		"canonical_status_code": 200,
+	})
+
+	// Add internal link edge to the canonical target
+	seedEdge(t, db, jobID, u1, "https://example.com/canonical-target", "link", true, "static")
+
+	cfg := DefaultGlobalConfig()
+	n, err := detectUnlinkedCanonical(db, jobID, cfg)
+	if err != nil {
+		t.Fatalf("detectUnlinkedCanonical: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("expected 0 unlinked_canonical issues (linked canonical), got %d", n)
 	}
 }

@@ -422,3 +422,187 @@ func TestMetaRobotsOutsideHead(t *testing.T) {
 		t.Error("MetaRobotsOutsideHead = false, want true")
 	}
 }
+
+func TestBatchA_MultipleTitles(t *testing.T) {
+	html := []byte(`<!DOCTYPE html>
+<html>
+<head><title>First</title><title>Second</title></head>
+<body><p>Hello</p></body>
+</html>`)
+	r, err := ParseHTML(html, "https://example.com/", http.Header{})
+	if err != nil {
+		t.Fatalf("ParseHTML error: %v", err)
+	}
+	if r.TitleCount != 2 {
+		t.Errorf("TitleCount = %d, want 2", r.TitleCount)
+	}
+}
+
+func TestBatchA_MultipleMetaDescriptions(t *testing.T) {
+	html := []byte(`<!DOCTYPE html>
+<html>
+<head>
+  <title>Test</title>
+  <meta name="description" content="First desc">
+  <meta name="description" content="Second desc">
+</head>
+<body><p>Hello</p></body>
+</html>`)
+	r, err := ParseHTML(html, "https://example.com/", http.Header{})
+	if err != nil {
+		t.Fatalf("ParseHTML error: %v", err)
+	}
+	if r.DescriptionCount != 2 {
+		t.Errorf("DescriptionCount = %d, want 2", r.DescriptionCount)
+	}
+}
+
+func TestBatchA_MetaDescriptionOutsideHead(t *testing.T) {
+	html := []byte(`<!DOCTYPE html>
+<html>
+<head><title>Test</title></head>
+<body>
+<meta name="description" content="Oops in body">
+<p>Hello</p>
+</body>
+</html>`)
+	r, err := ParseHTML(html, "https://example.com/", http.Header{})
+	if err != nil {
+		t.Fatalf("ParseHTML error: %v", err)
+	}
+	if !r.MetaDescriptionOutsideHead {
+		t.Error("MetaDescriptionOutsideHead = false, want true")
+	}
+}
+
+func TestBatchA_FirstHeadingLevel(t *testing.T) {
+	html := []byte(`<!DOCTYPE html>
+<html>
+<head><title>Test</title></head>
+<body>
+<h2>First heading is H2</h2>
+<h1>Then H1</h1>
+</body>
+</html>`)
+	r, err := ParseHTML(html, "https://example.com/", http.Header{})
+	if err != nil {
+		t.Fatalf("ParseHTML error: %v", err)
+	}
+	if r.FirstHeadingLevel != 2 {
+		t.Errorf("FirstHeadingLevel = %d, want 2", r.FirstHeadingLevel)
+	}
+}
+
+func TestBatchA_FirstHeadingLevel_H1First(t *testing.T) {
+	html := []byte(`<!DOCTYPE html>
+<html>
+<head><title>Test</title></head>
+<body>
+<h1>Proper H1</h1>
+<h2>Sub heading</h2>
+</body>
+</html>`)
+	r, err := ParseHTML(html, "https://example.com/", http.Header{})
+	if err != nil {
+		t.Fatalf("ParseHTML error: %v", err)
+	}
+	if r.FirstHeadingLevel != 1 {
+		t.Errorf("FirstHeadingLevel = %d, want 1", r.FirstHeadingLevel)
+	}
+}
+
+func TestBatchA_H1AltTextOnly(t *testing.T) {
+	html := []byte(`<!DOCTYPE html>
+<html>
+<head><title>Test</title></head>
+<body>
+<h1><img src="logo.png" alt="Company Logo"></h1>
+<h1>Normal H1 Text</h1>
+</body>
+</html>`)
+	r, err := ParseHTML(html, "https://example.com/", http.Header{})
+	if err != nil {
+		t.Fatalf("ParseHTML error: %v", err)
+	}
+	if len(r.H1AltTextOnly) != 1 {
+		t.Fatalf("H1AltTextOnly length = %d, want 1", len(r.H1AltTextOnly))
+	}
+	if r.H1AltTextOnly[0] != "Company Logo" {
+		t.Errorf("H1AltTextOnly[0] = %q, want %q", r.H1AltTextOnly[0], "Company Logo")
+	}
+}
+
+func TestBatchA_MultipleCanonicals(t *testing.T) {
+	html := []byte(`<!DOCTYPE html>
+<html>
+<head>
+  <title>Test</title>
+  <link rel="canonical" href="https://example.com/a">
+  <link rel="canonical" href="https://example.com/b">
+</head>
+<body><p>Hello</p></body>
+</html>`)
+	r, err := ParseHTML(html, "https://example.com/", http.Header{})
+	if err != nil {
+		t.Fatalf("ParseHTML error: %v", err)
+	}
+	if r.CanonicalCount != 2 {
+		t.Errorf("CanonicalCount = %d, want 2", r.CanonicalCount)
+	}
+}
+
+func TestBatchA_CanonicalOutsideHead(t *testing.T) {
+	html := []byte(`<!DOCTYPE html>
+<html>
+<head><title>Test</title></head>
+<body>
+<link rel="canonical" href="https://example.com/page">
+<p>Hello</p>
+</body>
+</html>`)
+	r, err := ParseHTML(html, "https://example.com/", http.Header{})
+	if err != nil {
+		t.Fatalf("ParseHTML error: %v", err)
+	}
+	if !r.CanonicalOutsideHead {
+		t.Error("CanonicalOutsideHead = false, want true")
+	}
+}
+
+func TestParseHTML_ImageSizeAttributes(t *testing.T) {
+	html := []byte(`<!DOCTYPE html>
+<html><head><title>Test</title></head>
+<body>
+	<img src="with-both.png" alt="both" width="100" height="200">
+	<img src="with-width.png" alt="width only" width="100">
+	<img src="with-height.png" alt="height only" height="200">
+	<img src="no-size.png" alt="no size">
+</body></html>`)
+	r, err := ParseHTML(html, "https://example.com/", http.Header{})
+	if err != nil {
+		t.Fatalf("ParseHTML error: %v", err)
+	}
+	if len(r.Images) != 4 {
+		t.Fatalf("Images count = %d, want 4", len(r.Images))
+	}
+
+	tests := []struct {
+		idx       int
+		wantW     bool
+		wantH     bool
+	}{
+		{0, true, true},   // both
+		{1, true, false},  // width only
+		{2, false, true},  // height only
+		{3, false, false}, // neither
+	}
+	for _, tt := range tests {
+		img := r.Images[tt.idx]
+		if img.HasWidth != tt.wantW {
+			t.Errorf("Image[%d] HasWidth = %v, want %v", tt.idx, img.HasWidth, tt.wantW)
+		}
+		if img.HasHeight != tt.wantH {
+			t.Errorf("Image[%d] HasHeight = %v, want %v", tt.idx, img.HasHeight, tt.wantH)
+		}
+	}
+}

@@ -4,7 +4,9 @@ package issues
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
+	"unicode"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/parser"
 )
@@ -52,6 +54,30 @@ type PageContext struct {
 	HasSPARoot             bool
 	TitleOutsideHead       bool
 	MetaRobotsOutsideHead  bool
+
+	// Batch A: title/meta, headings, canonicals
+	H1s                        []string // all H1 texts
+	H2s                        []string // all H2 texts
+	TitleCount                 int
+	DescriptionCount           int
+	MetaDescriptionOutsideHead bool
+	FirstHeadingLevel          int      // level of first heading (1-6), 0 if none
+	H1AltTextOnly              []string // alt texts from H1s that contain only an <img>
+	CanonicalCount             int
+	CanonicalRaw               string
+	CanonicalOutsideHead       bool
+
+	// Image details (Batch B)
+	Images []parser.DiscoveredImage
+
+	// Edge details (Batch B) — populated from edges built during parse
+	InternalOutlinkCount         int
+	NonDescriptiveAnchorCount    int
+	NonDescriptiveAnchorExamples []string
+	InternalNofollowCount        int
+
+	// URL of the page being analyzed (Batch B)
+	PageURL string
 }
 
 // Thresholds holds configurable limits for issue detection.
@@ -270,7 +296,275 @@ func DetectPageLocalIssues(ctx PageContext, thresholds Thresholds, depth int) []
 		issues = append(issues, newIssue("meta_robots_outside_head", "warning", map[string]any{}))
 	}
 
+	// ── Batch A: Title/Meta + Headings + Canonicals ────────────────────
+
+	// title_same_as_h1
+	if ctx.Title != "" && len(ctx.H1s) > 0 {
+		if strings.EqualFold(strings.TrimSpace(ctx.Title), strings.TrimSpace(ctx.H1s[0])) {
+			issues = append(issues, newIssue("title_same_as_h1", "warning", map[string]any{
+				"title": ctx.Title,
+				"h1":    ctx.H1s[0],
+			}))
+		}
+	}
+
+	// multiple_title_tags
+	if ctx.TitleCount > 1 {
+		issues = append(issues, newIssue("multiple_title_tags", "warning", map[string]any{
+			"count": ctx.TitleCount,
+		}))
+	}
+
+	// multiple_meta_descriptions
+	if ctx.DescriptionCount > 1 {
+		issues = append(issues, newIssue("multiple_meta_descriptions", "warning", map[string]any{
+			"count": ctx.DescriptionCount,
+		}))
+	}
+
+	// meta_description_outside_head
+	if ctx.MetaDescriptionOutsideHead {
+		issues = append(issues, newIssue("meta_description_outside_head", "warning", map[string]any{}))
+	}
+
+	// h1_too_long
+	for _, h1 := range ctx.H1s {
+		if len([]rune(h1)) > 70 {
+			issues = append(issues, newIssue("h1_too_long", "info", map[string]any{
+				"length": len([]rune(h1)),
+				"h1":     h1,
+			}))
+		}
+	}
+
+	// h1_non_sequential
+	if ctx.FirstHeadingLevel > 1 {
+		issues = append(issues, newIssue("h1_non_sequential", "warning", map[string]any{
+			"firstHeadingLevel": ctx.FirstHeadingLevel,
+		}))
+	}
+
+	// h1_alt_text_only
+	for _, alt := range ctx.H1AltTextOnly {
+		issues = append(issues, newIssue("h1_alt_text_only", "warning", map[string]any{
+			"alt": alt,
+		}))
+	}
+
+	// missing_h2
+	if len(ctx.H2s) == 0 {
+		issues = append(issues, newIssue("missing_h2", "info", map[string]any{}))
+	}
+
+	// h2_non_sequential: H2 without a preceding H1
+	if len(ctx.H2s) > 0 && ctx.H1Count == 0 {
+		issues = append(issues, newIssue("h2_non_sequential", "warning", map[string]any{}))
+	} else if len(ctx.H2s) > 0 && ctx.FirstHeadingLevel > 1 {
+		// First heading is H2+ meaning H2 appears before H1
+		issues = append(issues, newIssue("h2_non_sequential", "warning", map[string]any{}))
+	}
+
+	// h2_too_long
+	for _, h2 := range ctx.H2s {
+		if len([]rune(h2)) > 70 {
+			issues = append(issues, newIssue("h2_too_long", "info", map[string]any{
+				"length": len([]rune(h2)),
+				"h2":     h2,
+			}))
+		}
+	}
+
+	// multiple_canonicals
+	if ctx.CanonicalCount > 1 {
+		issues = append(issues, newIssue("multiple_canonicals", "warning", map[string]any{
+			"count": ctx.CanonicalCount,
+		}))
+	}
+
+	// canonical_is_relative
+	if ctx.CanonicalRaw != "" && !strings.HasPrefix(strings.ToLower(ctx.CanonicalRaw), "http") {
+		issues = append(issues, newIssue("canonical_is_relative", "warning", map[string]any{
+			"canonical": ctx.CanonicalRaw,
+		}))
+	}
+
+	// canonical_outside_head
+	if ctx.CanonicalOutsideHead {
+		issues = append(issues, newIssue("canonical_outside_head", "warning", map[string]any{}))
+	}
+
+	// ── Batch B: Image issues ──────────────────────────────────────────
+
+	// alt_text_too_long
+	if len(ctx.Images) > 0 {
+		var longAltCount int
+		var maxLen int
+		for _, img := range ctx.Images {
+			l := len(img.Alt)
+			if l > 100 {
+				longAltCount++
+				if l > maxLen {
+					maxLen = l
+				}
+			}
+		}
+		if longAltCount > 0 {
+			issues = append(issues, newIssue("alt_text_too_long", "warning", map[string]any{
+				"count":     longAltCount,
+				"maxLength": maxLen,
+			}))
+		}
+	}
+
+	// missing_image_size_attributes
+	if len(ctx.Images) > 0 {
+		var missingSizeCount int
+		for _, img := range ctx.Images {
+			if !img.HasWidth && !img.HasHeight {
+				missingSizeCount++
+			}
+		}
+		if missingSizeCount > 0 {
+			issues = append(issues, newIssue("missing_image_size_attributes", "info", map[string]any{
+				"count": missingSizeCount,
+			}))
+		}
+	}
+
+	// ── Batch B: Link issues ───────────────────────────────────────────
+
+	// non_descriptive_anchor_text
+	if ctx.NonDescriptiveAnchorCount > 0 {
+		issues = append(issues, newIssue("non_descriptive_anchor_text", "warning", map[string]any{
+			"count":    ctx.NonDescriptiveAnchorCount,
+			"examples": ctx.NonDescriptiveAnchorExamples,
+		}))
+	}
+
+	// internal_nofollow_outlink
+	if ctx.InternalNofollowCount > 0 {
+		issues = append(issues, newIssue("internal_nofollow_outlink", "warning", map[string]any{
+			"count": ctx.InternalNofollowCount,
+		}))
+	}
+
+	// ── Batch B: URL issues ────────────────────────────────────────────
+	issues = append(issues, DetectURLIssues(ctx.PageURL)...)
+
 	return issues
+}
+
+// nonDescriptiveAnchors is the set of generic anchor texts considered non-descriptive.
+var nonDescriptiveAnchors = map[string]bool{
+	"click here": true,
+	"read more":  true,
+	"learn more": true,
+	"here":       true,
+	"this":       true,
+	"more":       true,
+	"link":       true,
+	"go":         true,
+	"visit":      true,
+}
+
+// IsNonDescriptiveAnchor checks if the given anchor text is generic/non-descriptive.
+func IsNonDescriptiveAnchor(anchor string) bool {
+	return nonDescriptiveAnchors[strings.ToLower(strings.TrimSpace(anchor))]
+}
+
+// DetectURLIssues checks a URL string for common SEO URL issues.
+func DetectURLIssues(rawURL string) []DetectedIssue {
+	if rawURL == "" {
+		return nil
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return nil
+	}
+
+	var issues []DetectedIssue
+
+	// url_uppercase — path contains uppercase letters
+	if hasUppercase(parsed.Path) {
+		issues = append(issues, newIssue("url_uppercase", "info", map[string]any{
+			"url": rawURL,
+		}))
+	}
+
+	// url_underscores — path contains underscores
+	if strings.Contains(parsed.Path, "_") {
+		issues = append(issues, newIssue("url_underscores", "info", map[string]any{
+			"url": rawURL,
+		}))
+	}
+
+	// url_contains_space — encoded spaces (%20 or +)
+	if strings.Contains(rawURL, "%20") || strings.Contains(parsed.RawQuery, "+") || strings.Contains(parsed.Path, "+") {
+		issues = append(issues, newIssue("url_contains_space", "warning", map[string]any{
+			"url": rawURL,
+		}))
+	}
+
+	// url_has_parameters — has query string
+	if parsed.RawQuery != "" {
+		params := []string{}
+		for key := range parsed.Query() {
+			params = append(params, key)
+		}
+		issues = append(issues, newIssue("url_has_parameters", "info", map[string]any{
+			"url":    rawURL,
+			"params": params,
+		}))
+	}
+
+	// url_too_long — over 115 characters
+	if len(rawURL) > 115 {
+		issues = append(issues, newIssue("url_too_long", "info", map[string]any{
+			"url":    rawURL,
+			"length": len(rawURL),
+		}))
+	}
+
+	// url_multiple_slashes — consecutive slashes in path
+	if strings.Contains(parsed.Path, "//") {
+		issues = append(issues, newIssue("url_multiple_slashes", "warning", map[string]any{
+			"url": rawURL,
+		}))
+	}
+
+	// url_repetitive_path — repeating path segments
+	if seg := findRepetitiveSegment(parsed.Path); seg != "" {
+		issues = append(issues, newIssue("url_repetitive_path", "warning", map[string]any{
+			"url":             rawURL,
+			"repeatedSegment": seg,
+		}))
+	}
+
+	return issues
+}
+
+// hasUppercase returns true if the string contains any uppercase letter.
+func hasUppercase(s string) bool {
+	for _, r := range s {
+		if unicode.IsUpper(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// findRepetitiveSegment returns the first repeated consecutive path segment, or "".
+func findRepetitiveSegment(path string) string {
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	if len(segments) < 2 {
+		return ""
+	}
+	for i := 1; i < len(segments); i++ {
+		if segments[i] != "" && segments[i] == segments[i-1] {
+			return segments[i]
+		}
+	}
+	return ""
 }
 
 // parseRobotsDirectives splits a robots directive string into a normalized set.

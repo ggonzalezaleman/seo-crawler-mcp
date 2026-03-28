@@ -70,10 +70,12 @@ type DiscoveredLink struct {
 
 // DiscoveredImage represents an image found in the page.
 type DiscoveredImage struct {
-	Src       string `json:"src"`
-	Alt       string `json:"alt"`
-	AltEmpty  bool   `json:"altEmpty"`
-	AltMissing bool  `json:"altMissing"`
+	Src        string `json:"src"`
+	Alt        string `json:"alt"`
+	AltEmpty   bool   `json:"altEmpty"`
+	AltMissing bool   `json:"altMissing"`
+	HasWidth   bool   `json:"hasWidth"`
+	HasHeight  bool   `json:"hasHeight"`
 }
 
 // DiscoveredAsset represents a non-image asset found in the page (script, stylesheet, etc.).
@@ -106,13 +108,20 @@ type ParseResult struct {
 	Images               []DiscoveredImage
 	ExtractedWordCount   int
 	MainContentWordCount int
-	Assets                 []DiscoveredAsset
-	ContentHash            string
-	JSSuspect              bool
-	ScriptCount            int
-	HasSPARoot             bool
-	TitleOutsideHead       bool
-	MetaRobotsOutsideHead  bool
+	Assets                    []DiscoveredAsset
+	ContentHash               string
+	JSSuspect                 bool
+	ScriptCount               int
+	HasSPARoot                bool
+	TitleOutsideHead          bool
+	MetaRobotsOutsideHead     bool
+	TitleCount                int
+	DescriptionCount          int
+	MetaDescriptionOutsideHead bool
+	FirstHeadingLevel         int // level of the first heading encountered (1-6), 0 if none
+	H1AltTextOnly             []string // alt texts from H1s that contain only an <img>
+	CanonicalCount            int
+	CanonicalOutsideHead      bool
 }
 
 // ParseHTML extracts SEO metadata from raw HTML bytes.
@@ -152,10 +161,12 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 	// Title
 	r.Title = strings.TrimSpace(doc.Find("title").First().Text())
 	r.TitleLength = utf8.RuneCountInString(r.Title)
+	r.TitleCount = doc.Find("title").Length()
 
 	// Meta description
 	r.MetaDescription = doc.Find(`meta[name="description"]`).AttrOr("content", "")
 	r.DescriptionLength = utf8.RuneCountInString(r.MetaDescription)
+	r.DescriptionCount = doc.Find(`meta[name="description"]`).Length()
 
 	// Meta robots
 	r.MetaRobots = doc.Find(`meta[name="robots"]`).AttrOr("content", "")
@@ -307,6 +318,8 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 			Alt:        alt,
 			AltEmpty:   altExists && alt == "",
 			AltMissing: !altExists,
+			HasWidth:   s.AttrOr("width", "") != "",
+			HasHeight:  s.AttrOr("height", "") != "",
 		}
 		r.Images = append(r.Images, img)
 	})
@@ -440,6 +453,50 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 	// Detect meta robots outside <head> (inside <body>)
 	doc.Find("body meta[name='robots']").Each(func(_ int, s *goquery.Selection) {
 		r.MetaRobotsOutsideHead = true
+	})
+
+	// Detect meta description outside <head> (inside <body>)
+	doc.Find("body meta[name='description']").Each(func(_ int, s *goquery.Selection) {
+		r.MetaDescriptionOutsideHead = true
+	})
+
+	// Canonical count and outside head
+	r.CanonicalCount = doc.Find(`link[rel="canonical"]`).Length()
+	doc.Find("body link[rel='canonical']").Each(func(_ int, s *goquery.Selection) {
+		r.CanonicalOutsideHead = true
+	})
+
+	// First heading level (document order)
+	r.FirstHeadingLevel = 0
+	doc.Find("h1, h2, h3, h4, h5, h6").First().Each(func(_ int, s *goquery.Selection) {
+		tagName := goquery.NodeName(s)
+		if len(tagName) == 2 && tagName[0] == 'h' {
+			r.FirstHeadingLevel = int(tagName[1] - '0')
+		}
+	})
+
+	// H1 alt text only: H1 contains only an <img> with alt text, no visible text
+	r.H1AltTextOnly = make([]string, 0)
+	doc.Find("h1").Each(func(_ int, s *goquery.Selection) {
+		// Clone and remove img elements to get text-only content
+		clone := s.Clone()
+		imgAlt := ""
+		hasImg := false
+		clone.Find("img").Each(func(_ int, img *goquery.Selection) {
+			hasImg = true
+			if alt, exists := img.Attr("alt"); exists && alt != "" {
+				imgAlt = alt
+			}
+		})
+		if !hasImg {
+			return
+		}
+		// Get text content excluding img elements
+		clone.Find("img").Remove()
+		textOnly := strings.TrimSpace(clone.Text())
+		if textOnly == "" && imgAlt != "" {
+			r.H1AltTextOnly = append(r.H1AltTextOnly, imgAlt)
+		}
 	})
 
 	return r, nil

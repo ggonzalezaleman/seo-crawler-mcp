@@ -3,6 +3,8 @@ package issues
 import (
 	"strings"
 	"testing"
+
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/parser"
 )
 
 // cleanPage returns a well-formed PageContext that should produce no error/warning issues.
@@ -561,5 +563,313 @@ func TestNoOutsideHeadIssuesOnCleanPage(t *testing.T) {
 	}
 	if hasIssue(issues, "meta_robots_outside_head") {
 		t.Error("unexpected meta_robots_outside_head on clean page")
+	}
+}
+
+// ── Batch B: Image issue tests ──────────────────────────────────────
+
+func TestAltTextTooLong(t *testing.T) {
+	ctx := cleanPage()
+	ctx.Images = []parser.DiscoveredImage{
+		{Src: "a.png", Alt: strings.Repeat("x", 150), HasWidth: true, HasHeight: true},
+		{Src: "b.png", Alt: "short", HasWidth: true, HasHeight: true},
+	}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 0)
+	if !hasIssue(issues, "alt_text_too_long") {
+		t.Error("expected alt_text_too_long")
+	}
+}
+
+func TestAltTextNotTooLong(t *testing.T) {
+	ctx := cleanPage()
+	ctx.Images = []parser.DiscoveredImage{
+		{Src: "a.png", Alt: "Reasonable alt text", HasWidth: true, HasHeight: true},
+	}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 0)
+	if hasIssue(issues, "alt_text_too_long") {
+		t.Error("unexpected alt_text_too_long")
+	}
+}
+
+func TestMissingImageSizeAttributes(t *testing.T) {
+	ctx := cleanPage()
+	ctx.Images = []parser.DiscoveredImage{
+		{Src: "a.png", Alt: "A", HasWidth: false, HasHeight: false},
+		{Src: "b.png", Alt: "B", HasWidth: true, HasHeight: true},
+		{Src: "c.png", Alt: "C", HasWidth: true, HasHeight: false}, // has one, should NOT trigger
+	}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 0)
+	if !hasIssue(issues, "missing_image_size_attributes") {
+		t.Error("expected missing_image_size_attributes")
+	}
+}
+
+func TestImageWithOneDimensionDoesNotTrigger(t *testing.T) {
+	ctx := cleanPage()
+	ctx.Images = []parser.DiscoveredImage{
+		{Src: "a.png", Alt: "A", HasWidth: true, HasHeight: false},
+	}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 0)
+	if hasIssue(issues, "missing_image_size_attributes") {
+		t.Error("unexpected missing_image_size_attributes when one dimension is present")
+	}
+}
+
+// ── Batch B: Link issue tests ───────────────────────────────────────
+
+func TestNonDescriptiveAnchorText(t *testing.T) {
+	ctx := cleanPage()
+	ctx.NonDescriptiveAnchorCount = 3
+	ctx.NonDescriptiveAnchorExamples = []string{"click here", "read more", "here"}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 0)
+	if !hasIssue(issues, "non_descriptive_anchor_text") {
+		t.Error("expected non_descriptive_anchor_text")
+	}
+}
+
+func TestInternalNofollowOutlink(t *testing.T) {
+	ctx := cleanPage()
+	ctx.InternalNofollowCount = 2
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 0)
+	if !hasIssue(issues, "internal_nofollow_outlink") {
+		t.Error("expected internal_nofollow_outlink")
+	}
+}
+
+// ── Batch B: URL issue tests ────────────────────────────────────────
+
+func TestDetectURLIssues(t *testing.T) {
+	tests := []struct {
+		name      string
+		url       string
+		wantTypes []string
+		wantAbsent []string
+	}{
+		{
+			name:       "clean URL",
+			url:        "https://example.com/blog/my-post",
+			wantTypes:  []string{},
+			wantAbsent: []string{"url_uppercase", "url_underscores", "url_contains_space", "url_has_parameters", "url_too_long", "url_multiple_slashes", "url_repetitive_path"},
+		},
+		{
+			name:      "uppercase path",
+			url:       "https://example.com/Blog/My-Post",
+			wantTypes: []string{"url_uppercase"},
+		},
+		{
+			name:      "underscores",
+			url:       "https://example.com/blog/my_post",
+			wantTypes: []string{"url_underscores"},
+		},
+		{
+			name:      "space %20",
+			url:       "https://example.com/blog/my%20post",
+			wantTypes: []string{"url_contains_space"},
+		},
+		{
+			name:      "query parameters",
+			url:       "https://example.com/search?q=test&page=1",
+			wantTypes: []string{"url_has_parameters"},
+		},
+		{
+			name:      "long URL",
+			url:       "https://example.com/" + strings.Repeat("a", 100),
+			wantTypes: []string{"url_too_long"},
+		},
+		{
+			name:      "multiple slashes",
+			url:       "https://example.com/blog//post",
+			wantTypes: []string{"url_multiple_slashes"},
+		},
+		{
+			name:      "repetitive path",
+			url:       "https://example.com/blog/blog/post",
+			wantTypes: []string{"url_repetitive_path"},
+		},
+		{
+			name:       "empty URL returns no issues",
+			url:        "",
+			wantTypes:  []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DetectURLIssues(tt.url)
+
+			for _, wantType := range tt.wantTypes {
+				if !hasIssue(got, wantType) {
+					t.Errorf("expected issue %q not found", wantType)
+				}
+			}
+			for _, absentType := range tt.wantAbsent {
+				if hasIssue(got, absentType) {
+					t.Errorf("unexpected issue %q found", absentType)
+				}
+			}
+		})
+	}
+}
+
+func TestIsNonDescriptiveAnchor(t *testing.T) {
+	tests := []struct {
+		anchor string
+		want   bool
+	}{
+		{"click here", true},
+		{"Click Here", true},
+		{"  read more  ", true},
+		{"here", true},
+		{"Our Services", false},
+		{"Learn about SEO", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := IsNonDescriptiveAnchor(tt.anchor); got != tt.want {
+			t.Errorf("IsNonDescriptiveAnchor(%q) = %v, want %v", tt.anchor, got, tt.want)
+		}
+	}
+}
+
+func TestURLIssuesIntegratedInPageLocal(t *testing.T) {
+	ctx := cleanPage()
+	ctx.PageURL = "https://example.com/Blog/my_post"
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 0)
+	if !hasIssue(issues, "url_uppercase") {
+		t.Error("expected url_uppercase from PageURL")
+	}
+	if !hasIssue(issues, "url_underscores") {
+		t.Error("expected url_underscores from PageURL")
+	}
+}
+
+// ── Batch A tests ──────────────────────────────────────────────────────
+
+func TestBatchA_TitleSameAsH1(t *testing.T) {
+	ctx := cleanPage()
+	ctx.Title = "My Page Title"
+	ctx.H1s = []string{"My Page Title"}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "title_same_as_h1") {
+		t.Error("expected title_same_as_h1 issue")
+	}
+}
+
+func TestBatchA_TitleSameAsH1_CaseInsensitive(t *testing.T) {
+	ctx := cleanPage()
+	ctx.Title = "my page title"
+	ctx.H1s = []string{"My Page Title"}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "title_same_as_h1") {
+		t.Error("expected title_same_as_h1 issue (case-insensitive)")
+	}
+}
+
+func TestBatchA_MultipleTitleTags(t *testing.T) {
+	ctx := cleanPage()
+	ctx.TitleCount = 3
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "multiple_title_tags") {
+		t.Error("expected multiple_title_tags issue")
+	}
+}
+
+func TestBatchA_MultipleMetaDescriptions(t *testing.T) {
+	ctx := cleanPage()
+	ctx.DescriptionCount = 2
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "multiple_meta_descriptions") {
+		t.Error("expected multiple_meta_descriptions issue")
+	}
+}
+
+func TestBatchA_MetaDescriptionOutsideHead(t *testing.T) {
+	ctx := cleanPage()
+	ctx.MetaDescriptionOutsideHead = true
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "meta_description_outside_head") {
+		t.Error("expected meta_description_outside_head issue")
+	}
+}
+
+func TestBatchA_H1TooLong(t *testing.T) {
+	ctx := cleanPage()
+	ctx.H1s = []string{strings.Repeat("A", 80)}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "h1_too_long") {
+		t.Error("expected h1_too_long issue")
+	}
+}
+
+func TestBatchA_H1NonSequential(t *testing.T) {
+	ctx := cleanPage()
+	ctx.FirstHeadingLevel = 2
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "h1_non_sequential") {
+		t.Error("expected h1_non_sequential issue")
+	}
+}
+
+func TestBatchA_H1AltTextOnly(t *testing.T) {
+	ctx := cleanPage()
+	ctx.H1AltTextOnly = []string{"Company Logo"}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "h1_alt_text_only") {
+		t.Error("expected h1_alt_text_only issue")
+	}
+}
+
+func TestBatchA_MissingH2(t *testing.T) {
+	ctx := cleanPage()
+	ctx.H2s = []string{}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "missing_h2") {
+		t.Error("expected missing_h2 issue")
+	}
+}
+
+func TestBatchA_H2NonSequential_NoH1(t *testing.T) {
+	ctx := cleanPage()
+	ctx.H1Count = 0
+	ctx.H2s = []string{"Some H2"}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "h2_non_sequential") {
+		t.Error("expected h2_non_sequential issue when H2 exists but no H1")
+	}
+}
+
+func TestBatchA_H2TooLong(t *testing.T) {
+	ctx := cleanPage()
+	ctx.H2s = []string{strings.Repeat("B", 80)}
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "h2_too_long") {
+		t.Error("expected h2_too_long issue")
+	}
+}
+
+func TestBatchA_MultipleCanonicals(t *testing.T) {
+	ctx := cleanPage()
+	ctx.CanonicalCount = 2
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "multiple_canonicals") {
+		t.Error("expected multiple_canonicals issue")
+	}
+}
+
+func TestBatchA_CanonicalIsRelative(t *testing.T) {
+	ctx := cleanPage()
+	ctx.CanonicalRaw = "/page"
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "canonical_is_relative") {
+		t.Error("expected canonical_is_relative issue")
+	}
+}
+
+func TestBatchA_CanonicalOutsideHead(t *testing.T) {
+	ctx := cleanPage()
+	ctx.CanonicalOutsideHead = true
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+	if !hasIssue(issues, "canonical_outside_head") {
+		t.Error("expected canonical_outside_head issue")
 	}
 }

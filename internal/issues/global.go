@@ -52,6 +52,8 @@ func DetectGlobalIssues(db *storage.DB, jobID string, cfg GlobalConfig) (int, er
 		detectInSitemapRobotsBlocked,
 		detectHTTPToHTTPSMissing,
 		detectJSOnlyNavigation,
+		detectImageOver100KB,
+		detectNoInternalOutlinks,
 	}
 
 	var total int
@@ -941,6 +943,88 @@ func detectJSOnlyNavigation(db *storage.DB, jobID string, _ GlobalConfig) (int, 
 	return len(links), nil
 }
 
+func detectImageOver100KB(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT a.url_id, u.normalized_url, a.content_length
+		FROM assets a
+		JOIN urls u ON u.id = a.url_id AND u.job_id = a.job_id
+		JOIN asset_references ar ON ar.job_id = a.job_id AND ar.asset_url_id = a.url_id AND ar.reference_type = 'img_src'
+		WHERE a.job_id = ? AND a.content_length > 102400
+		GROUP BY a.url_id
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying image_over_100kb: %w", err)
+	}
+	defer rows.Close()
+
+	type bigImage struct {
+		urlID         int64
+		url           string
+		contentLength int64
+	}
+	images := []bigImage{}
+	for rows.Next() {
+		var img bigImage
+		if err := rows.Scan(&img.urlID, &img.url, &img.contentLength); err != nil {
+			return 0, fmt.Errorf("scanning image_over_100kb: %w", err)
+		}
+		images = append(images, img)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating image_over_100kb: %w", err)
+	}
+
+	for _, img := range images {
+		if err := insertGlobalIssue(db, jobID, &img.urlID, "image_over_100kb", "warning", map[string]any{
+			"url":    img.url,
+			"sizeKB": img.contentLength / 1024,
+		}); err != nil {
+			return 0, err
+		}
+	}
+
+	return len(images), nil
+}
+
+func detectNoInternalOutlinks(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT p.url_id
+		FROM pages p
+		WHERE p.job_id = ?
+			AND NOT EXISTS (
+				SELECT 1 FROM edges e
+				WHERE e.job_id = p.job_id
+					AND e.source_url_id = p.url_id
+					AND e.is_internal = 1
+					AND e.relation_type = 'link'
+			)
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying no_internal_outlinks: %w", err)
+	}
+	defer rows.Close()
+
+	urlIDs := []int64{}
+	for rows.Next() {
+		var urlID int64
+		if err := rows.Scan(&urlID); err != nil {
+			return 0, fmt.Errorf("scanning no_internal_outlinks: %w", err)
+		}
+		urlIDs = append(urlIDs, urlID)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterating no_internal_outlinks: %w", err)
+	}
+
+	for _, urlID := range urlIDs {
+		if err := insertGlobalIssue(db, jobID, &urlID, "no_internal_outlinks", "warning", map[string]any{}); err != nil {
+			return 0, err
+		}
+	}
+
+	return len(urlIDs), nil
+}
+
 func minIndex(values []int64) int {
 	if len(values) == 0 {
 		return 0
@@ -965,4 +1049,209 @@ func parseInt64List(raw string) []int64 {
 		values = append(values, value)
 	}
 	return values
+}
+
+// detectDuplicateH1 finds pages with the same H1 text.
+func detectDuplicateH1(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT json_extract(p.h1_json, '$[0]') AS first_h1, GROUP_CONCAT(p.url_id), GROUP_CONCAT(f.fetch_seq)
+		FROM pages p
+		JOIN fetches f ON f.id = p.fetch_id
+		WHERE p.job_id = ? AND p.h1_json IS NOT NULL AND p.h1_json != '[]' AND p.h1_json != ''
+		GROUP BY first_h1
+		HAVING COUNT(*) > 1
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying duplicate H1s: %w", err)
+	}
+
+	// Collect all groups first (close rows before writing)
+	groups := []duplicateGroup{}
+	for rows.Next() {
+		var g duplicateGroup
+		var urlIDsRaw, fetchSeqsRaw string
+		if err := rows.Scan(&g.value, &urlIDsRaw, &fetchSeqsRaw); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scanning duplicate H1 group: %w", err)
+		}
+		g.urlIDs = parseInt64List(urlIDsRaw)
+		g.fetchSeqs = parseInt64List(fetchSeqsRaw)
+		groups = append(groups, g)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+
+	var total int
+	for _, group := range groups {
+		canonicalIndex := minIndex(group.fetchSeqs)
+		for idx, urlID := range group.urlIDs {
+			if idx == canonicalIndex {
+				continue
+			}
+			if err := insertGlobalIssue(db, jobID, &urlID, "duplicate_h1", "warning", map[string]any{
+				"value":     group.value,
+				"groupSize": len(group.urlIDs),
+			}); err != nil {
+				return total, err
+			}
+			total++
+		}
+	}
+	return total, nil
+}
+
+// detectDuplicateH2 finds pages with the same H2 text.
+func detectDuplicateH2(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT json_extract(p.h2_json, '$[0]') AS first_h2, GROUP_CONCAT(p.url_id), GROUP_CONCAT(f.fetch_seq)
+		FROM pages p
+		JOIN fetches f ON f.id = p.fetch_id
+		WHERE p.job_id = ? AND p.h2_json IS NOT NULL AND p.h2_json != '[]' AND p.h2_json != ''
+		GROUP BY first_h2
+		HAVING COUNT(*) > 1
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying duplicate H2s: %w", err)
+	}
+
+	groups := []duplicateGroup{}
+	for rows.Next() {
+		var g duplicateGroup
+		var urlIDsRaw, fetchSeqsRaw string
+		if err := rows.Scan(&g.value, &urlIDsRaw, &fetchSeqsRaw); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scanning duplicate H2 group: %w", err)
+		}
+		g.urlIDs = parseInt64List(urlIDsRaw)
+		g.fetchSeqs = parseInt64List(fetchSeqsRaw)
+		groups = append(groups, g)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+
+	var total int
+	for _, group := range groups {
+		canonicalIndex := minIndex(group.fetchSeqs)
+		for idx, urlID := range group.urlIDs {
+			if idx == canonicalIndex {
+				continue
+			}
+			if err := insertGlobalIssue(db, jobID, &urlID, "duplicate_h2", "warning", map[string]any{
+				"value":     group.value,
+				"groupSize": len(group.urlIDs),
+			}); err != nil {
+				return total, err
+			}
+			total++
+		}
+	}
+	return total, nil
+}
+
+// detectNonIndexableCanonical finds pages whose canonical points to a noindexed page.
+func detectNonIndexableCanonical(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT p1.url_id, p1.canonical_url, p2.indexability_state
+		FROM pages p1
+		JOIN urls u2 ON u2.job_id = p1.job_id AND u2.normalized_url = p1.canonical_url
+		JOIN pages p2 ON p2.job_id = p1.job_id AND p2.url_id = u2.id
+		JOIN urls u1 ON u1.job_id = p1.job_id AND u1.id = p1.url_id
+		WHERE p1.job_id = ?
+			AND p1.canonical_url IS NOT NULL AND p1.canonical_url != ''
+			AND p1.canonical_url != u1.normalized_url
+			AND p2.indexability_state != 'indexable'
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying non_indexable_canonical: %w", err)
+	}
+
+	type candidate struct {
+		urlID              int64
+		canonicalURL       string
+		targetIndexability string
+	}
+	candidates := []candidate{}
+	for rows.Next() {
+		var c candidate
+		if err := rows.Scan(&c.urlID, &c.canonicalURL, &c.targetIndexability); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scanning non_indexable_canonical: %w", err)
+		}
+		candidates = append(candidates, c)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+
+	var total int
+	for _, c := range candidates {
+		if err := insertGlobalIssue(db, jobID, &c.urlID, "non_indexable_canonical", "warning", map[string]any{
+			"canonicalUrl":       c.canonicalURL,
+			"targetIndexability": c.targetIndexability,
+		}); err != nil {
+			return total, err
+		}
+		total++
+	}
+	return total, nil
+}
+
+// detectUnlinkedCanonical finds canonical URLs that have zero inbound internal link edges.
+func detectUnlinkedCanonical(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
+	rows, err := db.Query(`
+		SELECT p.url_id, p.canonical_url
+		FROM pages p
+		JOIN urls u ON u.job_id = p.job_id AND u.id = p.url_id
+		WHERE p.job_id = ?
+			AND p.canonical_url IS NOT NULL AND p.canonical_url != ''
+			AND p.canonical_url != u.normalized_url
+			AND NOT EXISTS (
+				SELECT 1 FROM edges e
+				WHERE e.job_id = p.job_id
+					AND e.declared_target_url = p.canonical_url
+					AND e.is_internal = 1
+					AND e.relation_type = 'link'
+			)
+	`, jobID)
+	if err != nil {
+		return 0, fmt.Errorf("querying unlinked_canonical: %w", err)
+	}
+
+	type unlinked struct {
+		urlID        int64
+		canonicalURL string
+	}
+	items := []unlinked{}
+	for rows.Next() {
+		var item unlinked
+		if err := rows.Scan(&item.urlID, &item.canonicalURL); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("scanning unlinked_canonical: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+
+	var total int
+	for _, item := range items {
+		if err := insertGlobalIssue(db, jobID, &item.urlID, "unlinked_canonical", "warning", map[string]any{
+			"canonicalUrl": item.canonicalURL,
+		}); err != nil {
+			return total, err
+		}
+		total++
+	}
+	return total, nil
 }

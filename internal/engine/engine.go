@@ -602,6 +602,27 @@ func (e *Engine) processParseResult(
 		ThinContentThreshold: e.config.ThinContentThreshold,
 		DeepPageThreshold:    e.config.DeepPageThreshold,
 	}
+	// Compute edge-based link stats for Batch B detectors
+	var internalOutlinkCount int
+	var nonDescriptiveCount int
+	var nonDescriptiveExamples []string
+	var internalNofollowCount int
+	for _, edge := range pr.edges {
+		if !edge.IsInternal || edge.RelationType != "link" {
+			continue
+		}
+		internalOutlinkCount++
+		if issues.IsNonDescriptiveAnchor(edge.AnchorText) {
+			nonDescriptiveCount++
+			if len(nonDescriptiveExamples) < 5 {
+				nonDescriptiveExamples = append(nonDescriptiveExamples, strings.TrimSpace(edge.AnchorText))
+			}
+		}
+		if strings.Contains(strings.ToLower(edge.RelFlagsJSON), "nofollow") {
+			internalNofollowCount++
+		}
+	}
+
 	pageCtx := issues.PageContext{
 		StatusCode:           fr.result.StatusCode,
 		RedirectHopCount:     len(fr.result.RedirectHops),
@@ -630,8 +651,24 @@ func (e *Engine) processParseResult(
 		JSSuspect:             page.JSSuspect,
 		ScriptCount:           page.ScriptCount,
 		HasSPARoot:            page.HasSPARoot,
-		TitleOutsideHead:      page.TitleOutsideHead,
-		MetaRobotsOutsideHead: page.MetaRobotsOutsideHead,
+		TitleOutsideHead:           page.TitleOutsideHead,
+		MetaRobotsOutsideHead:      page.MetaRobotsOutsideHead,
+		H1s:                        page.Headings.H1,
+		H2s:                        page.Headings.H2,
+		TitleCount:                 page.TitleCount,
+		DescriptionCount:           page.DescriptionCount,
+		MetaDescriptionOutsideHead: page.MetaDescriptionOutsideHead,
+		FirstHeadingLevel:          page.FirstHeadingLevel,
+		H1AltTextOnly:              page.H1AltTextOnly,
+		CanonicalCount:             page.CanonicalCount,
+		CanonicalRaw:               page.CanonicalRaw,
+		CanonicalOutsideHead:       page.CanonicalOutsideHead,
+		Images:                        page.Images,
+		InternalOutlinkCount:          internalOutlinkCount,
+		NonDescriptiveAnchorCount:     nonDescriptiveCount,
+		NonDescriptiveAnchorExamples:  nonDescriptiveExamples,
+		InternalNofollowCount:         internalNofollowCount,
+		PageURL:                       fr.url,
 	}
 	pr.issues = issues.DetectPageLocalIssues(pageCtx, thresholds, fr.depth)
 

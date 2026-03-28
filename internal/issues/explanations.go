@@ -198,6 +198,84 @@ var Explanations = map[string]IssueExplanation{
 		Impact:      "Search engines may ignore robots directives outside <head>. Critical directives like noindex could be missed.",
 		Fix:         "Move the <meta name=\"robots\"> tag into the <head> section of the HTML document.",
 	},
+	"title_same_as_h1": {
+		Title:       "Title Same as H1",
+		Description: "The page title and the first H1 heading are identical.",
+		Impact:      "Using the same text for both wastes an opportunity to target additional keywords and provide differentiated signals to search engines.",
+		Fix:         "Differentiate the title and H1. The title should be optimized for SERPs while the H1 can be more descriptive for on-page readers.",
+	},
+	"multiple_title_tags": {
+		Title:       "Multiple Title Tags",
+		Description: "This page has more than one <title> element.",
+		Impact:      "Browsers and search engines use the first <title> they encounter. Additional titles are ignored but signal messy HTML.",
+		Fix:         "Remove duplicate <title> tags, keeping only one in the <head> section.",
+	},
+	"multiple_meta_descriptions": {
+		Title:       "Multiple Meta Descriptions",
+		Description: "This page has more than one <meta name=\"description\"> tag.",
+		Impact:      "Search engines may pick an unpredictable description or ignore them all, leading to auto-generated snippets.",
+		Fix:         "Keep a single meta description tag in the <head> section.",
+	},
+	"meta_description_outside_head": {
+		Title:       "Meta Description Outside <head>",
+		Description: "A <meta name=\"description\"> tag appears inside the <body> instead of the <head>.",
+		Impact:      "Search engines may ignore meta descriptions outside <head>, resulting in auto-generated search snippets.",
+		Fix:         "Move the <meta name=\"description\"> tag into the <head> section.",
+	},
+	"h1_too_long": {
+		Title:       "H1 Too Long",
+		Description: "An H1 heading exceeds 70 characters.",
+		Impact:      "Overly long H1s dilute keyword focus and may be truncated in certain contexts.",
+		Fix:         "Keep H1 headings concise and under 70 characters, focusing on the primary keyword.",
+	},
+	"h1_non_sequential": {
+		Title:       "H1 Not First Heading",
+		Description: "The first heading on the page is not an H1; a lower-level heading (H2-H6) appears first.",
+		Impact:      "Non-sequential heading hierarchy confuses screen readers and weakens the content structure signal for search engines.",
+		Fix:         "Ensure the first heading on the page is an H1, followed by H2s and deeper levels in order.",
+	},
+	"h1_alt_text_only": {
+		Title:       "H1 Contains Only Image Alt Text",
+		Description: "An H1 heading has no visible text; it only contains an image with alt text.",
+		Impact:      "Search engines may not weight image-only H1s the same as text H1s, weakening the page's primary heading signal.",
+		Fix:         "Add visible text to the H1 in addition to or instead of the image.",
+	},
+	"missing_h2": {
+		Title:       "Missing H2 Headings",
+		Description: "This page has no H2 headings.",
+		Impact:      "H2 headings provide content structure and secondary keyword signals. Missing them suggests flat or poorly structured content.",
+		Fix:         "Add H2 headings to break content into logical sections with relevant keywords.",
+	},
+	"h2_non_sequential": {
+		Title:       "H2 Without Preceding H1",
+		Description: "An H2 heading appears on the page without a preceding H1.",
+		Impact:      "Skipping the H1 breaks the heading hierarchy, confusing assistive technologies and search engine content parsers.",
+		Fix:         "Add an H1 heading before any H2 headings on the page.",
+	},
+	"h2_too_long": {
+		Title:       "H2 Too Long",
+		Description: "An H2 heading exceeds 70 characters.",
+		Impact:      "Overly long H2s dilute keyword focus and may indicate content that should be restructured.",
+		Fix:         "Keep H2 headings concise and under 70 characters.",
+	},
+	"multiple_canonicals": {
+		Title:       "Multiple Canonical Tags",
+		Description: "This page has more than one <link rel=\"canonical\"> tag.",
+		Impact:      "Multiple canonicals send conflicting signals. Search engines may ignore them all and pick their own canonical.",
+		Fix:         "Keep a single canonical tag in the <head> section pointing to the preferred URL.",
+	},
+	"canonical_is_relative": {
+		Title:       "Relative Canonical URL",
+		Description: "The canonical URL uses a relative path instead of an absolute URL.",
+		Impact:      "While browsers resolve relative canonicals, Google recommends absolute URLs. Relative canonicals are more prone to errors.",
+		Fix:         "Use a fully qualified absolute URL (starting with https://) in the canonical tag.",
+	},
+	"canonical_outside_head": {
+		Title:       "Canonical Outside <head>",
+		Description: "A <link rel=\"canonical\"> tag appears inside <body> instead of <head>.",
+		Impact:      "Search engines may ignore canonical tags outside <head>, leading to incorrect canonical selection.",
+		Fix:         "Move the <link rel=\"canonical\"> tag into the <head> section.",
+	},
 	"js_suspect_not_rendered": {
 		Title:       "Suspected JavaScript-Rendered Content",
 		Description: "This page appears to rely heavily on JavaScript for rendering its main content.",
@@ -297,6 +375,30 @@ var Explanations = map[string]IssueExplanation{
 		Impact:      "Contradictory signals: the sitemap says 'index this' but robots.txt says 'don't crawl.' Search engines will not index it.",
 		Fix:         "Either remove the URL from the sitemap or remove the robots.txt disallow rule.",
 	},
+	"duplicate_h1": {
+		Title:       "Duplicate H1 Heading",
+		Description: "Multiple pages share the same H1 heading text.",
+		Impact:      "Identical H1s across pages suggest thin or duplicated content and weaken the unique relevance signal for each page.",
+		Fix:         "Give each page a unique H1 that reflects its specific content and target keywords.",
+	},
+	"duplicate_h2": {
+		Title:       "Duplicate H2 Heading",
+		Description: "Multiple pages share the same H2 heading text.",
+		Impact:      "Repeated H2s across pages may indicate boilerplate content or poor content differentiation.",
+		Fix:         "Ensure H2 headings are unique and relevant to each page's specific content.",
+	},
+	"non_indexable_canonical": {
+		Title:       "Canonical Points to Non-Indexable Page",
+		Description: "The canonical URL points to a page that has a noindex directive.",
+		Impact:      "Canonicalizing to a noindex page sends contradictory signals: you're saying 'this is the preferred version' but that version says 'don't index me.'",
+		Fix:         "Either remove the noindex from the canonical target or update the canonical to point to an indexable page.",
+	},
+	"unlinked_canonical": {
+		Title:       "Unlinked Canonical URL",
+		Description: "The canonical URL has no inbound internal links; it's only referenced via canonical declarations.",
+		Impact:      "Pages discoverable only through canonicals may not be crawled efficiently. Internal links are the primary discovery mechanism.",
+		Fix:         "Add internal links pointing to the canonical URL from relevant pages.",
+	},
 	"js_only_navigation": {
 		Title:       "JS-Only Navigation Link",
 		Description: "This internal link is only visible after JavaScript rendering, not in the static HTML source.",
@@ -308,6 +410,93 @@ var Explanations = map[string]IssueExplanation{
 		Description: "The site's HTTP version does not redirect to HTTPS.",
 		Impact:      "Without an HTTP-to-HTTPS redirect, search engines may index the insecure version, splitting ranking signals.",
 		Fix:         "Configure a 301 redirect from HTTP to HTTPS at the server level.",
+	},
+
+	// ── Batch B: Image issues ───────────────────────────────────────────
+
+	"image_over_100kb": {
+		Title:       "Image Over 100KB",
+		Description: "This image file exceeds 100KB in size.",
+		Impact:      "Large images slow page load times, hurt Core Web Vitals, and increase bandwidth costs for users on mobile or slow connections.",
+		Fix:         "Compress the image, use modern formats (WebP, AVIF), and serve appropriately sized versions.",
+	},
+	"alt_text_too_long": {
+		Title:       "Alt Text Too Long",
+		Description: "One or more images have alt text exceeding 100 characters.",
+		Impact:      "Excessively long alt text can be truncated by screen readers and may be seen as keyword stuffing by search engines.",
+		Fix:         "Keep alt text concise and descriptive, ideally under 100 characters.",
+	},
+	"missing_image_size_attributes": {
+		Title:       "Missing Image Size Attributes",
+		Description: "One or more images lack explicit width and height attributes.",
+		Impact:      "Without width/height attributes, the browser cannot reserve space for images before they load, causing layout shifts (poor CLS score).",
+		Fix:         "Add width and height attributes to <img> tags to prevent Cumulative Layout Shift.",
+	},
+
+	// ── Batch B: Link issues ────────────────────────────────────────────
+
+	"no_internal_outlinks": {
+		Title:       "No Internal Outgoing Links",
+		Description: "This page has zero internal outbound links.",
+		Impact:      "Pages without internal links are dead ends for crawlers and users, failing to distribute link equity or guide navigation.",
+		Fix:         "Add relevant internal links to help users and search engines discover related content.",
+	},
+	"non_descriptive_anchor_text": {
+		Title:       "Non-Descriptive Anchor Text",
+		Description: "Internal links use generic anchor text like 'click here' or 'read more'.",
+		Impact:      "Descriptive anchor text helps search engines understand the linked page's topic. Generic anchors waste this ranking signal.",
+		Fix:         "Replace generic anchor text with descriptive phrases that indicate the linked page's content.",
+	},
+	"internal_nofollow_outlink": {
+		Title:       "Internal Link With Nofollow",
+		Description: "An internal link uses rel=\"nofollow\", telling search engines not to follow it.",
+		Impact:      "Nofollowing internal links wastes PageRank and prevents search engines from efficiently crawling your own site.",
+		Fix:         "Remove rel=\"nofollow\" from internal links unless there's a specific reason (e.g., user-generated content).",
+	},
+
+	// ── Batch B: URL issues ─────────────────────────────────────────────
+
+	"url_uppercase": {
+		Title:       "URL Contains Uppercase Characters",
+		Description: "The URL path contains uppercase letters.",
+		Impact:      "URLs are case-sensitive on most servers. Uppercase URLs can cause duplicate content if both cases resolve to the same page.",
+		Fix:         "Use lowercase URLs consistently and redirect uppercase variants to lowercase.",
+	},
+	"url_underscores": {
+		Title:       "URL Contains Underscores",
+		Description: "The URL path uses underscores instead of hyphens as word separators.",
+		Impact:      "Google treats hyphens as word separators but not underscores. 'web_design' is one word to Google, 'web-design' is two.",
+		Fix:         "Use hyphens (-) instead of underscores (_) in URLs.",
+	},
+	"url_contains_space": {
+		Title:       "URL Contains Spaces",
+		Description: "The URL contains encoded spaces (%20 or +).",
+		Impact:      "Spaces in URLs look unprofessional, can cause encoding issues, and may break when shared or copied.",
+		Fix:         "Replace spaces with hyphens in URLs.",
+	},
+	"url_has_parameters": {
+		Title:       "URL Has Query Parameters",
+		Description: "The URL includes query string parameters.",
+		Impact:      "Parameterized URLs can cause duplicate content issues if not properly managed with canonical tags or parameter handling.",
+		Fix:         "Use canonical tags, configure URL parameters in Search Console, or rewrite to clean URLs where appropriate.",
+	},
+	"url_too_long": {
+		Title:       "URL Too Long",
+		Description: "The URL exceeds 115 characters.",
+		Impact:      "Long URLs are harder to share, may be truncated in search results, and can signal a deeply nested or poorly structured site.",
+		Fix:         "Shorten URLs by removing unnecessary path segments, parameters, or verbose slugs.",
+	},
+	"url_multiple_slashes": {
+		Title:       "URL Has Multiple Consecutive Slashes",
+		Description: "The URL path contains consecutive forward slashes (e.g., //path//to//page).",
+		Impact:      "Multiple slashes create duplicate URLs and can confuse search engines about the canonical version of the page.",
+		Fix:         "Configure server-side redirects to normalize URLs with consecutive slashes to single slashes.",
+	},
+	"url_repetitive_path": {
+		Title:       "URL Has Repetitive Path Segments",
+		Description: "The URL contains repeating path segments (e.g., /blog/blog/post).",
+		Impact:      "Repetitive path segments usually indicate a crawl trap, misconfigured routing, or URL generation bug that wastes crawl budget.",
+		Fix:         "Fix the URL generation logic and redirect repetitive URLs to the correct canonical path.",
 	},
 
 	// ── Engine-level issues (from crawler engine) ───────────────────────
