@@ -1,7 +1,11 @@
 // Package config defines configuration types and defaults for the SEO crawler.
 package config
 
-import "time"
+import (
+	"net/url"
+	"path"
+	"time"
+)
 
 // ScopeMode controls how crawl boundaries are determined.
 type ScopeMode string
@@ -104,6 +108,25 @@ type Config struct {
 
 	// URL group overrides
 	URLGroups []URLGroupConfig `json:"urlGroups"`
+}
+
+// MatchesForceRender returns true if the URL's path matches any ForceRenderPatterns.
+// Patterns use path.Match syntax (e.g., "/app/*").
+func (c *Config) MatchesForceRender(rawURL string) bool {
+	if len(c.ForceRenderPatterns) == 0 {
+		return false
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	p := parsed.Path
+	for _, pattern := range c.ForceRenderPatterns {
+		if matched, _ := path.Match(pattern, p); matched {
+			return true
+		}
+	}
+	return false
 }
 
 // DefaultConfig returns a Config populated with sensible defaults.

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/issues"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/parser"
@@ -73,6 +74,13 @@ func (s *Server) handleAnalyzeURL(ctx context.Context, req gomcp.CallToolRequest
 		if count >= maxConcurrent {
 			return gomcp.NewToolResultError(fmt.Sprintf("concurrent analyze limit reached (%d/%d)", count, maxConcurrent)), nil
 		}
+
+		// Create mini-job with 24h TTL for tracking.
+		ttl := 24 * time.Hour
+		if s.config != nil && s.config.AnalyzeJobTTL > 0 {
+			ttl = s.config.AnalyzeJobTTL
+		}
+		_, _ = s.db.CreateJobWithTTL("analyze", fmt.Sprintf(`{"url":%q}`, rawURL), "[]", ttl)
 	}
 
 	if s.fetcher == nil {

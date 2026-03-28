@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -182,6 +183,38 @@ func (db *DB) CountActiveJobs(jobType string) (int, error) {
 	}
 
 	return count, nil
+}
+
+// CountJobsCreatedSince returns the number of jobs created at or after the
+// given time. It counts all job types.
+func (db *DB) CountJobsCreatedSince(since time.Time) (int, error) {
+	sinceStr := since.UTC().Format("2006-01-02T15:04:05.000Z")
+	var count int
+	err := db.QueryRow(
+		`SELECT COUNT(*) FROM crawl_jobs WHERE created_at >= ?`,
+		sinceStr,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("counting jobs since %s: %w", sinceStr, err)
+	}
+	return count, nil
+}
+
+// CreateJobWithTTL inserts a new job and sets its ttl_expires_at field.
+func (db *DB) CreateJobWithTTL(jobType, configJSON, seedURLsJSON string, ttl time.Duration) (*CrawlJob, error) {
+	id := uuid.New().String()
+	ttlStr := time.Now().UTC().Add(ttl).Format("2006-01-02T15:04:05.000Z")
+
+	_, err := db.Exec(
+		`INSERT INTO crawl_jobs (id, type, config_json, seed_urls, ttl_expires_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		id, jobType, configJSON, seedURLsJSON, ttlStr,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("creating job %q with TTL: %w", id, err)
+	}
+
+	return db.GetJob(id)
 }
 
 // PurgeExpiredAnalyzeJobs deletes analyze jobs whose TTL has expired.

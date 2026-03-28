@@ -445,6 +445,129 @@ func TestGetLinkGraph_Inbound(t *testing.T) {
 	}
 }
 
+func TestGetCrawlResults_ExternalLinks(t *testing.T) {
+	db := setupTestDB(t)
+	jobID := seedTestData(t, db)
+	cfg := config.DefaultConfig()
+
+	s := NewServer(ServerConfig{DB: db, Config: &cfg})
+
+	req := gomcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{
+		"jobId": jobID,
+		"view":  "external_links",
+	}
+
+	result, err := s.handleGetCrawlResults(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+
+	var resp struct {
+		Results    []json.RawMessage `json:"results"`
+		TotalCount int               `json:"totalCount"`
+	}
+	for _, content := range result.Content {
+		if tc, ok := content.(gomcp.TextContent); ok {
+			if err := json.Unmarshal([]byte(tc.Text), &resp); err != nil {
+				t.Fatalf("parsing response: %v", err)
+			}
+		}
+	}
+
+	if resp.TotalCount != 1 {
+		t.Errorf("expected 1 external link, got %d", resp.TotalCount)
+	}
+}
+
+func TestGetCrawlResults_ResponseCodesFilter(t *testing.T) {
+	db := setupTestDB(t)
+	jobID := seedTestData(t, db)
+	cfg := config.DefaultConfig()
+
+	s := NewServer(ServerConfig{DB: db, Config: &cfg})
+
+	req := gomcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{
+		"jobId":            jobID,
+		"view":             "response_codes",
+		"statusCodeFamily": "2xx",
+	}
+
+	result, err := s.handleGetCrawlResults(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+
+	var resp struct {
+		Results        []json.RawMessage `json:"results"`
+		TotalCount     int               `json:"totalCount"`
+		IgnoredFilters []string          `json:"ignoredFilters"`
+	}
+	for _, content := range result.Content {
+		if tc, ok := content.(gomcp.TextContent); ok {
+			if err := json.Unmarshal([]byte(tc.Text), &resp); err != nil {
+				t.Fatalf("parsing response: %v", err)
+			}
+		}
+	}
+
+	if resp.TotalCount != 2 {
+		t.Errorf("expected 2 2xx fetches, got %d", resp.TotalCount)
+	}
+}
+
+func TestGetCrawlResults_PagesFilterIgnored(t *testing.T) {
+	db := setupTestDB(t)
+	jobID := seedTestData(t, db)
+	cfg := config.DefaultConfig()
+
+	s := NewServer(ServerConfig{DB: db, Config: &cfg})
+
+	req := gomcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{
+		"jobId":        jobID,
+		"view":         "pages",
+		"relationType": "hyperlink", // not applicable to pages view
+	}
+
+	result, err := s.handleGetCrawlResults(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.IsError {
+		t.Fatalf("expected success, got error: %v", result.Content)
+	}
+
+	var resp struct {
+		IgnoredFilters []string `json:"ignoredFilters"`
+	}
+	for _, content := range result.Content {
+		if tc, ok := content.(gomcp.TextContent); ok {
+			if err := json.Unmarshal([]byte(tc.Text), &resp); err != nil {
+				t.Fatalf("parsing response: %v", err)
+			}
+		}
+	}
+
+	found := false
+	for _, f := range resp.IgnoredFilters {
+		if f == "RelationType" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected 'RelationType' in ignoredFilters, got %v", resp.IgnoredFilters)
+	}
+}
+
 func TestGetLinkGraph_RequiresURLID(t *testing.T) {
 	db := setupTestDB(t)
 	s := NewServer(ServerConfig{DB: db})

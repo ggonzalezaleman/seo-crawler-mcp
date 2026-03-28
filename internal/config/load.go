@@ -377,6 +377,14 @@ func applyEnvOverrides(cfg *Config) {
 			cfg.MaxQueryVariantsPerPath = n
 		}
 	}
+	if v := os.Getenv("SEO_CRAWLER_FORCE_RENDER_PATTERNS"); v != "" {
+		cfg.ForceRenderPatterns = strings.Split(v, ",")
+	}
+	if v := os.Getenv("SEO_CRAWLER_MAX_JOB_AGE"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.MaxJobAge = d
+		}
+	}
 }
 
 // parseBool parses common boolean strings.

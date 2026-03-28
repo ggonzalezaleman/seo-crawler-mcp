@@ -174,6 +174,125 @@ func TestFetchSSRF(t *testing.T) {
 	}
 }
 
+func TestFetch429RetryWithRetryAfter(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, "rate limited")
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, "<html>ok</html>")
+	}))
+	defer srv.Close()
+
+	f := New(defaultOpts())
+	start := time.Now()
+	result, err := f.Fetch(srv.URL)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Fetch error: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("expected 2 attempts (original + retry), got %d", attempts)
+	}
+	if result.StatusCode != 200 {
+		t.Errorf("StatusCode = %d, want 200 after retry", result.StatusCode)
+	}
+	if string(result.Body) != "<html>ok</html>" {
+		t.Errorf("Body = %q, want %q", result.Body, "<html>ok</html>")
+	}
+	// Should have waited at least 1 second for Retry-After.
+	if elapsed < 900*time.Millisecond {
+		t.Errorf("elapsed = %v, expected >= ~1s for Retry-After", elapsed)
+	}
+}
+
+func TestFetch429RetryWithExponentialBackoff(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			// No Retry-After header -> should use exponential backoff.
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		fmt.Fprint(w, "ok")
+	}))
+	defer srv.Close()
+
+	opts := defaultOpts()
+	opts.Retries = 0 // 2^0 = 1 second backoff
+	f := New(opts)
+
+	start := time.Now()
+	result, err := f.Fetch(srv.URL)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("Fetch error: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("expected 2 attempts, got %d", attempts)
+	}
+	if result.StatusCode != 200 {
+		t.Errorf("StatusCode = %d, want 200", result.StatusCode)
+	}
+	if elapsed < 800*time.Millisecond {
+		t.Errorf("elapsed = %v, expected >= ~1s for backoff", elapsed)
+	}
+}
+
+func TestFetch429PersistentReturns429(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, "still rate limited")
+	}))
+	defer srv.Close()
+
+	f := New(defaultOpts())
+	result, err := f.Fetch(srv.URL)
+
+	if err != nil {
+		t.Fatalf("Fetch error: %v", err)
+	}
+	// After retry, if still 429, return that status.
+	if result.StatusCode != 429 {
+		t.Errorf("StatusCode = %d, want 429 after failed retry", result.StatusCode)
+	}
+}
+
+func TestFetch429ThrottlesHost(t *testing.T) {
+	attempts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		fmt.Fprint(w, "ok")
+	}))
+	defer srv.Close()
+
+	rl := NewRateLimiter(2)
+	f := New(defaultOpts())
+	f.RateLimiter = rl
+
+	result, err := f.Fetch(srv.URL)
+	if err != nil {
+		t.Fatalf("Fetch error: %v", err)
+	}
+	if result.StatusCode != 200 {
+		t.Errorf("StatusCode = %d, want 200", result.StatusCode)
+	}
+}
+
 func TestFetchGzipBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")

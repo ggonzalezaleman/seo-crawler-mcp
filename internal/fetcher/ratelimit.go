@@ -90,6 +90,29 @@ func (rl *RateLimiter) SetCrawlDelay(host string, delay time.Duration) {
 	state.mu.Unlock()
 }
 
+// ThrottleHost temporarily reduces the host to a single concurrent slot and
+// enforces the given delay before the next request. The original concurrency
+// is restored after the delay expires.
+func (rl *RateLimiter) ThrottleHost(host string, dur time.Duration) {
+	state := rl.getState(host)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	// Set crawl delay to the throttle duration.
+	if dur > state.delay {
+		state.delay = dur
+	}
+
+	// Schedule restoration of the original delay after the throttle period.
+	go func() {
+		time.Sleep(dur)
+		state.mu.Lock()
+		// Only reset if it hasn't been set to something larger in the meantime.
+		state.delay = 0
+		state.mu.Unlock()
+	}()
+}
+
 // RecordTTFB records a TTFB sample for a host and returns the average TTFB in
 // milliseconds once the ring buffer is full (ttfbRingSize samples). Returns
 // (avg, true) when full, (0, false) otherwise.

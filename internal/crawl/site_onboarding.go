@@ -18,11 +18,12 @@ import (
 // HostOnboarder performs per-host discovery (robots.txt, sitemaps, llms.txt)
 // exactly once per host during a crawl.
 type HostOnboarder struct {
-	fetcher    *fetcher.Fetcher
-	httpClient *http.Client // uses fetcher's SSRF-protected transport
-	db         *storage.DB
-	sitemapMax int
-	userAgent  string
+	fetcher                 *fetcher.Fetcher
+	httpClient              *http.Client // uses fetcher's SSRF-protected transport
+	db                      *storage.DB
+	sitemapMax              int
+	userAgent               string
+	robotsUnreachablePolicy string // "allow", "disallow", "cache_then_allow"
 }
 
 // HostInfo holds everything discovered during host onboarding.
@@ -42,11 +43,27 @@ type HostInfo struct {
 // NewHostOnboarder creates a HostOnboarder.
 func NewHostOnboarder(f *fetcher.Fetcher, db *storage.DB, sitemapMax int, userAgent string) *HostOnboarder {
 	return &HostOnboarder{
-		fetcher:    f,
-		httpClient: f.SafeClient(),
-		db:         db,
-		sitemapMax: sitemapMax,
-		userAgent:  userAgent,
+		fetcher:                 f,
+		httpClient:              f.SafeClient(),
+		db:                      db,
+		sitemapMax:              sitemapMax,
+		userAgent:               userAgent,
+		robotsUnreachablePolicy: "allow",
+	}
+}
+
+// NewHostOnboarderWithPolicy creates a HostOnboarder with a robots unreachable policy.
+func NewHostOnboarderWithPolicy(f *fetcher.Fetcher, db *storage.DB, sitemapMax int, userAgent string, robotsPolicy string) *HostOnboarder {
+	if robotsPolicy == "" {
+		robotsPolicy = "allow"
+	}
+	return &HostOnboarder{
+		fetcher:                 f,
+		httpClient:              f.SafeClient(),
+		db:                      db,
+		sitemapMax:              sitemapMax,
+		userAgent:               userAgent,
+		robotsUnreachablePolicy: robotsPolicy,
 	}
 }
 
@@ -75,7 +92,8 @@ func (h *HostOnboarder) discoverRobots(ctx context.Context, jobID, host, scheme 
 	robotsURL := fmt.Sprintf("%s://%s/robots.txt", scheme, host)
 	result, err := h.fetcher.Fetch(robotsURL)
 	if err != nil {
-		info.Events = append(info.Events, fmt.Sprintf("robots.txt fetch error for %q: %v — defaulting to allow-all", host, err))
+		// Apply robotsUnreachablePolicy for fetch errors (timeout, DNS, etc.)
+		h.applyRobotsUnreachablePolicy(host, fmt.Sprintf("robots.txt fetch error for %q: %v", host, err), info)
 		return
 	}
 
@@ -85,8 +103,18 @@ func (h *HostOnboarder) discoverRobots(ctx context.Context, jobID, host, scheme 
 	}
 
 	if result.StatusCode >= 500 {
-		info.Events = append(info.Events, fmt.Sprintf("robots.txt server error (%d) for %q — defaulting to allow-all", result.StatusCode, host))
-		return
+		// Retry once for server errors
+		result2, err2 := h.fetcher.Fetch(robotsURL)
+		if err2 != nil || (result2 != nil && result2.StatusCode >= 500) {
+			h.applyRobotsUnreachablePolicy(host, fmt.Sprintf("robots.txt server error (%d) for %q after retry", result.StatusCode, host), info)
+			return
+		}
+		// Retry succeeded — use retry result
+		result = result2
+		if result.StatusCode >= 400 {
+			info.Events = append(info.Events, fmt.Sprintf("robots.txt not found (%d) for %q after retry — allowing all", result.StatusCode, host))
+			return
+		}
 	}
 
 	if result.StatusCode >= 400 {
@@ -116,6 +144,24 @@ func (h *HostOnboarder) discoverRobots(ctx context.Context, jobID, host, scheme 
 
 	// Store directives in DB.
 	h.storeRobotsDirectives(jobID, host, robotsURL, rf, info)
+}
+
+// applyRobotsUnreachablePolicy applies the configured policy when robots.txt is unreachable.
+func (h *HostOnboarder) applyRobotsUnreachablePolicy(host, reason string, info *HostInfo) {
+	switch h.robotsUnreachablePolicy {
+	case "disallow":
+		info.Events = append(info.Events, fmt.Sprintf("%s — policy=disallow, blocking all paths", reason))
+		// Create a robots file that disallows everything.
+		disallowAll := "User-agent: *\nDisallow: /\n"
+		rf, _ := robots.Parse(disallowAll)
+		info.RobotsFile = rf
+		info.RobotsRaw = disallowAll
+	case "cache_then_allow":
+		// Cache not implemented in v1 — fall through to allow.
+		info.Events = append(info.Events, fmt.Sprintf("%s — policy=cache_then_allow (no cache, falling back to allow-all)", reason))
+	default: // "allow"
+		info.Events = append(info.Events, fmt.Sprintf("%s — policy=allow, defaulting to allow-all", reason))
+	}
 }
 
 // storeRobotsDirectives persists parsed robots.txt directives.

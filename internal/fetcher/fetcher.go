@@ -4,8 +4,10 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,8 +54,9 @@ type RedirectHop struct {
 // Fetcher performs HTTP requests with SSRF protection, redirect tracking,
 // decompression, and TTFB measurement.
 type Fetcher struct {
-	opts      Options
-	transport *http.Transport
+	opts        Options
+	transport   *http.Transport
+	RateLimiter *RateLimiter
 }
 
 // New creates a Fetcher with the given options and a shared transport.
@@ -91,6 +94,36 @@ func (f *Fetcher) Fetch(rawURL string) (*FetchResult, error) {
 func (f *Fetcher) Head(rawURL string) (*FetchResult, error) {
 	return f.do(rawURL, http.MethodHead)
 }
+
+// parseRetryAfter parses a Retry-After header value as either seconds or an
+// HTTP-date and returns the duration to wait. Returns 0 on parse failure.
+func parseRetryAfter(value string) time.Duration {
+	if value == "" {
+		return 0
+	}
+	// Try parsing as seconds first.
+	if secs, err := strconv.Atoi(value); err == nil && secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	// Try parsing as HTTP-date (RFC 1123).
+	if t, err := time.Parse(time.RFC1123, value); err == nil {
+		d := time.Until(t)
+		if d > 0 {
+			return d
+		}
+	}
+	// Try RFC 850 format.
+	if t, err := time.Parse(time.RFC850, value); err == nil {
+		d := time.Until(t)
+		if d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
+// maxRetryAfter caps the wait time for 429 retries.
+const maxRetryAfter = 60 * time.Second
 
 func (f *Fetcher) do(rawURL string, method string) (*FetchResult, error) {
 	result := &FetchResult{
@@ -182,6 +215,53 @@ func (f *Fetcher) do(rawURL string, method string) (*FetchResult, error) {
 		result.Error = err
 		return result, err
 	}
+
+	// Handle 429 Too Many Requests: retry once after waiting.
+	if resp.StatusCode == http.StatusTooManyRequests {
+		resp.Body.Close()
+
+		wait := parseRetryAfter(resp.Header.Get("Retry-After"))
+		if wait == 0 {
+			// Exponential backoff: use Retries count as attempt indicator.
+			// Default: 1s for first 429.
+			wait = time.Duration(math.Pow(2, float64(f.opts.Retries))) * time.Second
+			if wait > maxRetryAfter {
+				wait = maxRetryAfter
+			}
+		}
+		if wait > maxRetryAfter {
+			wait = maxRetryAfter
+		}
+
+		// Throttle the host via rate limiter if available.
+		if f.RateLimiter != nil {
+			if u, pErr := url.Parse(rawURL); pErr == nil {
+				f.RateLimiter.ThrottleHost(u.Hostname(), wait)
+			}
+		}
+
+		time.Sleep(wait)
+
+		// Rebuild request for retry.
+		retryReq, retryErr := http.NewRequest(method, rawURL, nil)
+		if retryErr != nil {
+			result.Error = retryErr
+			return result, retryErr
+		}
+		if f.opts.UserAgent != "" {
+			retryReq.Header.Set("User-Agent", f.opts.UserAgent)
+		}
+		retryReq.Header.Set("Accept-Encoding", "gzip, deflate")
+
+		retryStart := time.Now()
+		resp, err = client.Do(retryReq)
+		result.TTFBMS = time.Since(retryStart).Milliseconds()
+		if err != nil {
+			result.Error = err
+			return result, err
+		}
+	}
+
 	defer resp.Body.Close()
 
 	result.FinalURL = resp.Request.URL.String()

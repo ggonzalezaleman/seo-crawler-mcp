@@ -4,8 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
+	"time"
 
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/parser"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/robots"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/sitemap"
 	gomcp "github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -127,6 +132,20 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 		return gomcp.NewToolResultError("server not configured: database unavailable"), nil
 	}
 
+	// Job guard: check hourly rate limit
+	maxJobsPerHour := 20
+	if s.config != nil && s.config.MaxJobsPerHour > 0 {
+		maxJobsPerHour = s.config.MaxJobsPerHour
+	}
+	hourAgo := time.Now().Add(-1 * time.Hour)
+	recentJobs, err := s.db.CountJobsCreatedSince(hourAgo)
+	if err != nil {
+		return gomcp.NewToolResultError(fmt.Sprintf("checking job rate limit: %v", err)), nil
+	}
+	if recentJobs >= maxJobsPerHour {
+		return gomcp.NewToolResultError(fmt.Sprintf("rate limit: max %d jobs per hour (currently %d)", maxJobsPerHour, recentJobs)), nil
+	}
+
 	// Job guard: check concurrent crawl limit
 	maxConcurrent := 3
 	if s.config != nil {
@@ -174,11 +193,13 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 	// Log the crawl start event
 	s.logInfo(ctx, fmt.Sprintf("Created crawl job %s for %s (maxPages=%d, scope=%s)", job.ID, rawURL, maxPages, scopeMode))
 
-	// Start crawl in background (non-dryRun).
-	// NOTE: We do NOT mutate s.config here — that would be a data race.
-	// Per-job config is already stored in the job's config_json field above.
-	// The engine reads config from the job record when starting a crawl.
-	if !dryRun && s.engine != nil {
+	if dryRun {
+		// Discovery-only: fetch seeds, parse links, check robots/sitemaps.
+		return s.runDryRun(ctx, job.ID, seedURLs)
+	}
+
+	// Start crawl in background.
+	if s.engine != nil {
 		go func() {
 			_ = s.engine.RunCrawl(context.Background(), job.ID)
 			// Notify clients when crawl completes
@@ -244,6 +265,131 @@ func (s *Server) handleCrawlStatus(ctx context.Context, req gomcp.CallToolReques
 	issueCounts, err := s.db.CountIssuesByType(jobID)
 	if err == nil {
 		result.IssuesByType = issueCounts
+	}
+
+	return gomcp.NewToolResultJSON(result)
+}
+
+// dryRunResult is returned when dryRun is true.
+type dryRunResult struct {
+	JobID             string            `json:"jobId"`
+	Status            string            `json:"status"`
+	EstimatedURLs     int               `json:"estimatedUrls"`
+	HostsDiscovered   []string          `json:"hostsDiscovered"`
+	SitemapEntryCount int               `json:"sitemapEntryCount"`
+	SeedIssues        []dryRunSeedIssue `json:"seedIssues"`
+}
+
+type dryRunSeedIssue struct {
+	URL   string `json:"url"`
+	Issue string `json:"issue"`
+}
+
+func (s *Server) runDryRun(ctx context.Context, jobID string, seedURLs []string) (*gomcp.CallToolResult, error) {
+	result := dryRunResult{
+		JobID:           jobID,
+		Status:          "completed",
+		HostsDiscovered: []string{},
+		SeedIssues:      []dryRunSeedIssue{},
+	}
+
+	hostsSeen := map[string]bool{}
+	allLinks := map[string]bool{}
+
+	for _, seedURL := range seedURLs {
+		parsed, err := url.Parse(seedURL)
+		if err != nil {
+			result.SeedIssues = append(result.SeedIssues, dryRunSeedIssue{URL: seedURL, Issue: fmt.Sprintf("invalid URL: %v", err)})
+			continue
+		}
+		hostsSeen[parsed.Hostname()] = true
+
+		if s.fetcher == nil {
+			result.SeedIssues = append(result.SeedIssues, dryRunSeedIssue{URL: seedURL, Issue: "fetcher unavailable"})
+			continue
+		}
+
+		fetchResult, err := s.fetcher.Fetch(seedURL)
+		if err != nil {
+			result.SeedIssues = append(result.SeedIssues, dryRunSeedIssue{URL: seedURL, Issue: fmt.Sprintf("fetch error: %v", err)})
+			continue
+		}
+		if fetchResult.StatusCode >= 400 {
+			result.SeedIssues = append(result.SeedIssues, dryRunSeedIssue{URL: seedURL, Issue: fmt.Sprintf("HTTP %d", fetchResult.StatusCode)})
+			continue
+		}
+
+		// Parse HTML to extract links.
+		parseResult, parseErr := parser.ParseHTML(fetchResult.Body, fetchResult.FinalURL, fetchResult.ResponseHeaders)
+		if parseErr != nil {
+			result.SeedIssues = append(result.SeedIssues, dryRunSeedIssue{URL: seedURL, Issue: fmt.Sprintf("parse error: %v", parseErr)})
+			continue
+		}
+
+		for _, link := range parseResult.Links {
+			allLinks[link.URL] = true
+			if lp, lpErr := url.Parse(link.URL); lpErr == nil && lp.Hostname() != "" {
+				hostsSeen[lp.Hostname()] = true
+			}
+		}
+	}
+
+	// Fetch robots.txt and sitemaps for discovered hosts.
+	var client *http.Client
+	if s.fetcher != nil {
+		client = s.fetcher.SafeClient()
+	} else {
+		client = &http.Client{}
+	}
+
+	sitemapTotal := 0
+	for host := range hostsSeen {
+		// Fetch robots.txt.
+		robotsURL := fmt.Sprintf("https://%s/robots.txt", host)
+		resp, err := client.Get(robotsURL)
+		if err == nil && resp.StatusCode == 200 {
+			bodyBytes := make([]byte, 0, 32*1024)
+			buf := make([]byte, 4096)
+			for {
+				n, readErr := resp.Body.Read(buf)
+				if n > 0 {
+					bodyBytes = append(bodyBytes, buf[:n]...)
+				}
+				if readErr != nil {
+					break
+				}
+				if len(bodyBytes) > 512*1024 {
+					break
+				}
+			}
+			resp.Body.Close()
+
+			rf, parseErr := robots.Parse(string(bodyBytes))
+			if parseErr == nil {
+				for _, smURL := range rf.Sitemaps {
+					entries, _, smErr := sitemap.FetchAndParse(smURL, 10000, client)
+					if smErr == nil {
+						sitemapTotal += len(entries)
+						for _, e := range entries {
+							allLinks[e.Loc] = true
+						}
+					}
+				}
+			}
+		} else if resp != nil {
+			resp.Body.Close()
+		}
+	}
+
+	result.EstimatedURLs = len(allLinks)
+	result.SitemapEntryCount = sitemapTotal
+	for host := range hostsSeen {
+		result.HostsDiscovered = append(result.HostsDiscovered, host)
+	}
+
+	// Mark job completed.
+	if s.db != nil {
+		_ = s.db.UpdateJobFinished(jobID, "completed", nil)
 	}
 
 	return gomcp.NewToolResultJSON(result)

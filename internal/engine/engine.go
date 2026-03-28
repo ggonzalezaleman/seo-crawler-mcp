@@ -394,6 +394,12 @@ func (e *Engine) processParseResult(
 	}
 	pr.page = page
 
+	// forceRenderPatterns: mark pages matching patterns as JS-suspect
+	// so they get flagged for browser rendering in hybrid mode.
+	if e.config.MatchesForceRender(fr.url) && !page.JSSuspect {
+		page.JSSuspect = true
+	}
+
 	newCount := pagesCrawled.Add(1)
 	if int(newCount) > e.config.MaxPages {
 		// Past limit — don't expand edges from this page
@@ -537,7 +543,12 @@ func (e *Engine) persistItem(ctx context.Context, jobID string, item persistItem
 	if fr.result != nil && fr.result.FinalURL != fr.url {
 		parsed, parseErr := url.Parse(fr.result.FinalURL)
 		if parseErr == nil {
-			fid, upsertErr := txUpsertURL(tx, jobID, fr.result.FinalURL, parsed.Hostname(), "fetched", e.scopeChecker.IsInScope(fr.result.FinalURL), "redirect")
+			finalInScope := e.scopeChecker.IsInScope(fr.result.FinalURL)
+			finalStatus := "fetched"
+			if !finalInScope {
+				finalStatus = "out_of_scope"
+			}
+			fid, upsertErr := txUpsertURL(tx, jobID, fr.result.FinalURL, parsed.Hostname(), finalStatus, finalInScope, "redirect")
 			if upsertErr == nil {
 				finalURLID = &fid
 			}
@@ -649,14 +660,24 @@ func (e *Engine) persistItem(ctx context.Context, jobID string, item persistItem
 		if edge.IsInternal {
 			boolToInt = 1
 		}
+
+		// HEAD request for out-of-scope canonical/hreflang targets
+		var targetStatusCode *int
+		if !edge.IsInternal && (edge.RelationType == "canonical" || edge.RelationType == "hreflang") {
+			headResult, headErr := e.fetcher.Head(edge.NormalizedTargetURL)
+			if headErr == nil && headResult != nil {
+				targetStatusCode = &headResult.StatusCode
+			}
+		}
+
 		if _, edgeErr := tx.ExecContext(ctx,
 			`INSERT INTO edges (job_id, source_url_id, normalized_target_url_id,
 				source_kind, relation_type, rel_flags_json, discovery_mode,
-				anchor_text, is_internal, declared_target_url)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				anchor_text, is_internal, declared_target_url, target_status_code)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			jobID, edge.SourceURLID, targetURLID,
 			edge.SourceKind, edge.RelationType, relFlags, edge.DiscoveryMode,
-			anchorText, boolToInt, edge.DeclaredTargetURL,
+			anchorText, boolToInt, edge.DeclaredTargetURL, targetStatusCode,
 		); edgeErr != nil {
 			return fmt.Errorf("inserting edge: %w", edgeErr)
 		}

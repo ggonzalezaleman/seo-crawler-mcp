@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // testDB creates a temporary SQLite database and returns a *DB.
@@ -238,6 +239,63 @@ func TestCountActiveJobs(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("expected 1 active analyze job, got %d", count)
+	}
+}
+
+func TestCountJobsCreatedSince(t *testing.T) {
+	db := testDB(t)
+
+	// Create 3 jobs.
+	_, err := db.CreateJob("crawl", "{}", "[]")
+	if err != nil {
+		t.Fatalf("CreateJob 1: %v", err)
+	}
+	_, err = db.CreateJob("crawl", "{}", "[]")
+	if err != nil {
+		t.Fatalf("CreateJob 2: %v", err)
+	}
+	_, err = db.CreateJob("analyze", "{}", "[]")
+	if err != nil {
+		t.Fatalf("CreateJob 3: %v", err)
+	}
+
+	// Count since 1 hour ago: should find all 3.
+	hourAgo := time.Now().Add(-1 * time.Hour)
+	count, err := db.CountJobsCreatedSince(hourAgo)
+	if err != nil {
+		t.Fatalf("CountJobsCreatedSince: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("expected 3 jobs since 1h ago, got %d", count)
+	}
+
+	// Count since far future: should find 0.
+	future := time.Now().Add(24 * time.Hour)
+	count, err = db.CountJobsCreatedSince(future)
+	if err != nil {
+		t.Fatalf("CountJobsCreatedSince (future): %v", err)
+	}
+	if count != 0 {
+		t.Errorf("expected 0 jobs since future, got %d", count)
+	}
+}
+
+func TestCreateJobWithTTL(t *testing.T) {
+	db := testDB(t)
+
+	job, err := db.CreateJobWithTTL("analyze", `{"url":"https://example.com"}`, "[]", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateJobWithTTL: %v", err)
+	}
+
+	if job.ID == "" {
+		t.Fatal("expected non-empty job ID")
+	}
+	if !job.TTLExpiresAt.Valid {
+		t.Fatal("expected TTLExpiresAt to be set")
+	}
+	if job.TTLExpiresAt.String == "" {
+		t.Fatal("expected non-empty TTLExpiresAt")
 	}
 }
 
