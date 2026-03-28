@@ -5,12 +5,19 @@ import (
 	"time"
 )
 
+const ttfbRingSize = 10
+
 // hostState holds the semaphore and crawl-delay state for a single host.
 type hostState struct {
 	sem       chan struct{}
 	mu        sync.Mutex
 	delay     time.Duration
 	lastFetch time.Time
+
+	// TTFB ring buffer for slow-host detection.
+	ttfbRing  [ttfbRingSize]int64
+	ttfbCount int
+	ttfbIdx   int
 }
 
 // RateLimiter enforces per-host concurrency limits and crawl delays.
@@ -81,4 +88,29 @@ func (rl *RateLimiter) SetCrawlDelay(host string, delay time.Duration) {
 	state.mu.Lock()
 	state.delay = delay
 	state.mu.Unlock()
+}
+
+// RecordTTFB records a TTFB sample for a host and returns the average TTFB in
+// milliseconds once the ring buffer is full (ttfbRingSize samples). Returns
+// (avg, true) when full, (0, false) otherwise.
+func (rl *RateLimiter) RecordTTFB(host string, ttfbMS int64) (avgMS int64, full bool) {
+	state := rl.getState(host)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	state.ttfbRing[state.ttfbIdx] = ttfbMS
+	state.ttfbIdx = (state.ttfbIdx + 1) % ttfbRingSize
+	if state.ttfbCount < ttfbRingSize {
+		state.ttfbCount++
+	}
+
+	if state.ttfbCount < ttfbRingSize {
+		return 0, false
+	}
+
+	var sum int64
+	for _, v := range state.ttfbRing {
+		sum += v
+	}
+	return sum / ttfbRingSize, true
 }

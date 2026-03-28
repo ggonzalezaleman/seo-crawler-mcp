@@ -45,6 +45,53 @@ func TestRateLimiter_Concurrency(t *testing.T) {
 	}
 }
 
+func TestRateLimiter_RecordTTFB(t *testing.T) {
+	rl := NewRateLimiter(1)
+	host := "ttfb.example.com"
+
+	// First 9 samples: not full yet
+	for i := range 9 {
+		avg, full := rl.RecordTTFB(host, int64(6000+i))
+		if full {
+			t.Fatalf("expected not full at sample %d", i+1)
+		}
+		if avg != 0 {
+			t.Fatalf("expected avg=0 when not full, got %d", avg)
+		}
+	}
+
+	// 10th sample: full, avg should be computed
+	avg, full := rl.RecordTTFB(host, 6000)
+	if !full {
+		t.Fatal("expected full after 10 samples")
+	}
+	if avg < 6000 {
+		t.Errorf("expected avg >= 6000, got %d", avg)
+	}
+
+	// Another host: not affected
+	_, full2 := rl.RecordTTFB("other.example.com", 100)
+	if full2 {
+		t.Error("other host should not be full after 1 sample")
+	}
+}
+
+func TestRateLimiter_RecordTTFB_LowValues(t *testing.T) {
+	rl := NewRateLimiter(1)
+	host := "fast.example.com"
+
+	for range 10 {
+		rl.RecordTTFB(host, 100)
+	}
+	avg, full := rl.RecordTTFB(host, 100)
+	if !full {
+		t.Fatal("expected full")
+	}
+	if avg > 5000 {
+		t.Errorf("expected avg <= 5000 for fast host, got %d", avg)
+	}
+}
+
 func TestRateLimiter_CrawlDelay(t *testing.T) {
 	rl := NewRateLimiter(1)
 	host := "slow.example.com"

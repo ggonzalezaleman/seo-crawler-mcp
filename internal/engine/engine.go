@@ -232,6 +232,20 @@ func (e *Engine) RunCrawl(ctx context.Context, jobID string) error {
 				// Release rate limiter
 				e.rateLimiter.Release(item.Host)
 
+				// Track TTFB for slow-host detection
+				if result != nil {
+					if avgTTFB, full := e.rateLimiter.RecordTTFB(item.Host, result.TTFBMS); full && avgTTFB > 5000 {
+						detailsJSON := fmt.Sprintf(`{"host":%q,"avgTtfbMs":%d}`, item.Host, avgTTFB)
+						e.db.InsertIssue(storage.IssueInput{
+							JobID:       jobID,
+							IssueType:   "slow_host",
+							Severity:    "info",
+							Scope:       "page_local",
+							DetailsJSON: &detailsJSON,
+						})
+					}
+				}
+
 				fr := fetchResult{
 					urlID:    item.URLID,
 					url:      item.NormalizedURL,
@@ -353,6 +367,16 @@ func (e *Engine) processParseResult(
 		return pr
 	}
 
+	// Rate limited detection
+	if fr.result.StatusCode == 429 {
+		pr.issues = append(pr.issues, issues.DetectedIssue{
+			IssueType:   "rate_limited",
+			Severity:    "info",
+			Scope:       "page_local",
+			DetailsJSON: fmt.Sprintf(`{"statusCode":429,"host":%q}`, fr.host),
+		})
+	}
+
 	// Check if HTML
 	ct := strings.ToLower(fr.result.ContentType)
 	isHTML := strings.Contains(ct, "text/html")
@@ -460,6 +484,16 @@ func (e *Engine) processParseResult(
 			count := queryVariants[pathKey]
 			queryVariantsMu.Unlock()
 			if count > e.config.MaxQueryVariantsPerPath {
+				detailsJSON := fmt.Sprintf(`{"path":%q,"queryVariants":%d,"limit":%d,"url":%q}`,
+					pathKey, count, e.config.MaxQueryVariantsPerPath, normalized)
+				e.db.InsertIssue(storage.IssueInput{
+					JobID:       jobID,
+					URLID:       nil,
+					IssueType:   "crawl_trap_suspected",
+					Severity:    "info",
+					Scope:       "page_local",
+					DetailsJSON: &detailsJSON,
+				})
 				continue
 			}
 		}

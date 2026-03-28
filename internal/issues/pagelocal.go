@@ -4,6 +4,7 @@ package issues
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // DetectedIssue represents a single SEO issue found on a page.
@@ -218,12 +219,49 @@ func DetectPageLocalIssues(ctx PageContext, thresholds Thresholds, depth int) []
 		}))
 	}
 
+	// Robots meta vs header mismatch
+	if ctx.MetaRobots != "" && ctx.XRobotsTag != "" {
+		metaDirectives := parseRobotsDirectives(ctx.MetaRobots)
+		headerDirectives := parseRobotsDirectives(ctx.XRobotsTag)
+		if !directivesMatch(metaDirectives, headerDirectives) {
+			issues = append(issues, newIssue("robots_meta_header_mismatch", "warning", map[string]any{
+				"metaRobots": ctx.MetaRobots,
+				"xRobotsTag": ctx.XRobotsTag,
+			}))
+		}
+	}
+
 	// JS Rendering
 	if ctx.JSSuspect {
 		issues = append(issues, newIssue("js_suspect_not_rendered", "info", map[string]any{}))
 	}
 
 	return issues
+}
+
+// parseRobotsDirectives splits a robots directive string into a normalized set.
+func parseRobotsDirectives(raw string) map[string]bool {
+	directives := map[string]bool{}
+	for _, part := range strings.Split(raw, ",") {
+		d := strings.TrimSpace(strings.ToLower(part))
+		if d != "" {
+			directives[d] = true
+		}
+	}
+	return directives
+}
+
+// directivesMatch returns true if two directive sets are identical.
+func directivesMatch(a, b map[string]bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k := range a {
+		if !b[k] {
+			return false
+		}
+	}
+	return true
 }
 
 func newIssue(issueType, severity string, details map[string]any) DetectedIssue {

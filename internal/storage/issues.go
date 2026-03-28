@@ -84,6 +84,34 @@ func (db *DB) GetIssuesByJob(jobID string, limit int, cursor string) ([]Issue, e
 	return issues, nil
 }
 
+// GetIssuesByURL returns issues for a specific URL within a job.
+func (db *DB) GetIssuesByURL(jobID string, urlID int64) ([]Issue, error) {
+	rows, err := db.Query(
+		`SELECT `+issueColumns+` FROM issues
+		 WHERE job_id = ? AND url_id = ?
+		 ORDER BY id ASC`,
+		jobID, urlID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying issues for URL %d in job %q: %w", urlID, jobID, err)
+	}
+	defer rows.Close()
+
+	issues := []Issue{}
+	for rows.Next() {
+		i, scanErr := scanIssue(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("scanning issue row: %w", scanErr)
+		}
+		issues = append(issues, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating issue rows: %w", err)
+	}
+
+	return issues, nil
+}
+
 // CountIssuesByType returns a map of issue_type → count for a job.
 func (db *DB) CountIssuesByType(jobID string) (map[string]int, error) {
 	rows, err := db.Query(

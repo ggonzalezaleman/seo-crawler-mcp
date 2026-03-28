@@ -357,6 +357,43 @@ func TestDetectPageLocalIssues(t *testing.T) {
 			wantTypes:  []string{"js_suspect_not_rendered"},
 		},
 		{
+			name: "robots meta/header mismatch — noindex vs index",
+			ctx: func() PageContext {
+				p := cleanPage()
+				p.MetaRobots = "noindex, follow"
+				p.XRobotsTag = "index, follow"
+				return p
+			}(),
+			thresholds: defaultThresholds(),
+			depth:      1,
+			wantTypes:  []string{"robots_meta_header_mismatch"},
+		},
+		{
+			name: "robots meta/header match — no issue",
+			ctx: func() PageContext {
+				p := cleanPage()
+				p.MetaRobots = "noindex, nofollow"
+				p.XRobotsTag = "nofollow, noindex"
+				return p
+			}(),
+			thresholds: defaultThresholds(),
+			depth:      1,
+			wantTypes:  []string{},
+			wantAbsent: []string{"robots_meta_header_mismatch"},
+		},
+		{
+			name: "robots only meta — no mismatch",
+			ctx: func() PageContext {
+				p := cleanPage()
+				p.MetaRobots = "noindex"
+				p.XRobotsTag = ""
+				return p
+			}(),
+			thresholds: defaultThresholds(),
+			depth:      1,
+			wantAbsent: []string{"robots_meta_header_mismatch"},
+		},
+		{
 			name: "multiple issues — missing title + thin content + no H1",
 			ctx: func() PageContext {
 				p := cleanPage()
@@ -422,6 +459,43 @@ func TestSliceNeverNil(t *testing.T) {
 	issues := DetectPageLocalIssues(cleanPage(), defaultThresholds(), 1)
 	if issues == nil {
 		t.Error("returned slice must not be nil")
+	}
+}
+
+func TestParseRobotsDirectives(t *testing.T) {
+	tests := []struct {
+		input string
+		want  map[string]bool
+	}{
+		{"noindex, nofollow", map[string]bool{"noindex": true, "nofollow": true}},
+		{"NOINDEX", map[string]bool{"noindex": true}},
+		{"index, follow", map[string]bool{"index": true, "follow": true}},
+		{"", map[string]bool{}},
+	}
+	for _, tt := range tests {
+		got := parseRobotsDirectives(tt.input)
+		if len(got) != len(tt.want) {
+			t.Errorf("parseRobotsDirectives(%q) = %v, want %v", tt.input, got, tt.want)
+			continue
+		}
+		for k := range tt.want {
+			if !got[k] {
+				t.Errorf("parseRobotsDirectives(%q) missing %q", tt.input, k)
+			}
+		}
+	}
+}
+
+func TestDirectivesMatch(t *testing.T) {
+	a := map[string]bool{"noindex": true, "nofollow": true}
+	b := map[string]bool{"nofollow": true, "noindex": true}
+	c := map[string]bool{"index": true, "follow": true}
+
+	if !directivesMatch(a, b) {
+		t.Error("expected a and b to match")
+	}
+	if directivesMatch(a, c) {
+		t.Error("expected a and c to not match")
 	}
 }
 
