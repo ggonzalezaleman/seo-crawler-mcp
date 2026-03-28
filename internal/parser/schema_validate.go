@@ -15,6 +15,8 @@ type SchemaValidationResult struct {
 	MissingRecommended []string `json:"missingRecommended,omitempty"`
 	Valid              bool     `json:"valid"`
 	Nested             bool     `json:"nested"`
+	Source             string   `json:"source"`                // "google_rich_results" or "schema_org_best_practice"
+	GoogleDocURL       string   `json:"googleDocUrl,omitempty"`
 }
 
 // isEmptyValue returns true for nil, empty strings, empty slices, and empty maps.
@@ -178,6 +180,8 @@ func validateObject(obj map[string]interface{}, depth int) []SchemaValidationRes
 			MissingRecommended: missingRecommended,
 			Valid:              len(missingRequired) == 0,
 			Nested:             depth > 0,
+			Source:             rule.Source,
+			GoogleDocURL:       rule.GoogleDocURL,
 		})
 	}
 

@@ -230,6 +230,8 @@ func DetectPageLocalIssues(ctx PageContext, thresholds Thresholds, depth int) []
 					"type":            r.Type,
 					"missingRequired": r.MissingRequired,
 					"scope":           "required",
+					"source":          r.Source,
+					"googleDocUrl":    r.GoogleDocURL,
 				}))
 			}
 			if len(r.MissingRecommended) > 0 && !r.Nested {

@@ -5,7 +5,7 @@ import (
 )
 
 func TestValidateJSONLD_Article_Complete(t *testing.T) {
-	raw := `{"@type": "Article", "headline": "Test", "author": "John", "datePublished": "2024-01-01", "image": "img.jpg", "dateModified": "2024-01-02", "publisher": "Pub"}`
+	raw := `{"@type": "Article", "headline": "Test", "author": "John", "datePublished": "2024-01-01", "image": "img.jpg", "dateModified": "2024-01-02", "publisher": "Pub", "mainEntityOfPage": "https://example.com"}`
 	results := ValidateJSONLD(raw)
 
 	if len(results) != 1 {
@@ -34,8 +34,9 @@ func TestValidateJSONLD_Article_MissingRequired(t *testing.T) {
 	if r.Valid {
 		t.Error("expected Valid=false")
 	}
-	if len(r.MissingRequired) != 1 || r.MissingRequired[0] != "headline" {
-		t.Errorf("expected missingRequired=[headline], got %v", r.MissingRequired)
+	// Now missing both headline and image
+	if len(r.MissingRequired) != 2 {
+		t.Errorf("expected 2 missingRequired, got %v", r.MissingRequired)
 	}
 }
 
@@ -81,6 +82,7 @@ func TestValidateJSONLD_NestedObjects(t *testing.T) {
 		"headline": "Test Post",
 		"author": "Jane",
 		"datePublished": "2024-01-01",
+		"image": "img.jpg",
 		"publisher": {
 			"@type": "Organization",
 			"name": "My Org"
@@ -103,7 +105,7 @@ func TestValidateJSONLD_NestedObjects(t *testing.T) {
 
 func TestValidateJSONLD_ArrayOfObjects(t *testing.T) {
 	raw := `[
-		{"@type": "Article", "headline": "A1", "author": "X", "datePublished": "2024-01-01"},
+		{"@type": "Article", "headline": "A1", "author": "X", "datePublished": "2024-01-01", "image": "img.jpg"},
 		{"@type": "Product", "name": "P1"},
 		{"@type": "Person", "name": "John"}
 	]`
@@ -125,7 +127,7 @@ func TestValidateJSONLD_ArrayOfObjects(t *testing.T) {
 }
 
 func TestValidateJSONLD_TypeArray(t *testing.T) {
-	raw := `{"@type": ["Article", "BlogPosting"], "headline": "Test", "author": "X", "datePublished": "2024-01-01"}`
+	raw := `{"@type": ["Article", "BlogPosting"], "headline": "Test", "author": "X", "datePublished": "2024-01-01", "image": "img.jpg"}`
 	results := ValidateJSONLD(raw)
 
 	if len(results) < 2 {
@@ -170,18 +172,25 @@ func TestValidateJSONLD_JSONLDBlockWrapper(t *testing.T) {
 	if r.Type != "Article" {
 		t.Errorf("expected type Article, got %s", r.Type)
 	}
-	// headline is missing
+	// headline and image are missing
 	if r.Valid {
-		t.Error("expected Valid=false (missing headline)")
+		t.Error("expected Valid=false (missing headline and image)")
 	}
-	found := false
+	foundHeadline := false
+	foundImage := false
 	for _, p := range r.MissingRequired {
 		if p == "headline" {
-			found = true
+			foundHeadline = true
+		}
+		if p == "image" {
+			foundImage = true
 		}
 	}
-	if !found {
+	if !foundHeadline {
 		t.Errorf("expected headline in missingRequired, got %v", r.MissingRequired)
+	}
+	if !foundImage {
+		t.Errorf("expected image in missingRequired, got %v", r.MissingRequired)
 	}
 }
 
@@ -267,6 +276,7 @@ func TestValidateJSONLD_NestedObjectsMarkedNested(t *testing.T) {
 		"headline": "Test",
 		"author": "Jane",
 		"datePublished": "2024-01-01",
+		"image": "img.jpg",
 		"publisher": {
 			"@type": "Organization",
 			"name": "My Org"
@@ -325,5 +335,52 @@ func TestValidateJSONLD_EmptyObjectCountsAsMissing(t *testing.T) {
 	r := results[0]
 	if r.Valid {
 		t.Error("expected Valid=false for empty object name")
+	}
+}
+
+func TestOnlyGoogleRichResultTypesHaveRequired(t *testing.T) {
+	googleRichResultTypes := map[string]bool{
+		"Article": true, "BlogPosting": true, "NewsArticle": true,
+		"Product": true, "LocalBusiness": true, "BreadcrumbList": true,
+		"FAQPage": true, "HowTo": true, "Event": true, "Recipe": true,
+		"Review": true, "SoftwareApplication": true, "VideoObject": true,
+		"Offer": true, "AggregateRating": true, "ItemList": true,
+	}
+
+	for typeName, rule := range schemaRules {
+		if len(rule.Required) > 0 && !googleRichResultTypes[typeName] {
+			t.Errorf("type %q has Required properties but is not a Google Rich Result type — move properties to Recommended", typeName)
+		}
+		if len(rule.Required) > 0 && rule.Source != "google_rich_results" {
+			t.Errorf("type %q has Required properties but Source is %q, expected \"google_rich_results\"", typeName, rule.Source)
+		}
+	}
+}
+
+func TestValidationResultIncludesSource(t *testing.T) {
+	// Google Rich Result type should have source populated
+	raw := `{"@type": "Article", "headline": "Test", "author": "X", "datePublished": "2024", "image": "img.jpg"}`
+	results := ValidateJSONLD(raw)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if results[0].Source != "google_rich_results" {
+		t.Errorf("expected source google_rich_results, got %q", results[0].Source)
+	}
+	if results[0].GoogleDocURL == "" {
+		t.Error("expected GoogleDocURL to be set for Article")
+	}
+
+	// Schema.org best practice type
+	raw2 := `{"@type": "Organization", "name": "Org"}`
+	results2 := ValidateJSONLD(raw2)
+	if len(results2) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results2))
+	}
+	if results2[0].Source != "schema_org_best_practice" {
+		t.Errorf("expected source schema_org_best_practice, got %q", results2[0].Source)
+	}
+	if results2[0].GoogleDocURL != "" {
+		t.Errorf("expected empty GoogleDocURL for Organization, got %q", results2[0].GoogleDocURL)
 	}
 }
