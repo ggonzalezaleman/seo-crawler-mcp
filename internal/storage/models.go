@@ -10,14 +10,14 @@ type CrawlJob struct {
 	Status         string         `json:"status"`
 	ConfigJSON     string         `json:"configJson"`
 	SeedURLs       string         `json:"seedUrls"`
-	URLsDiscovered int64          `json:"urlsDiscovered"`
-	URLsCrawled    int64          `json:"urlsCrawled"`
-	URLsErrored    int64          `json:"urlsErrored"`
-	TTLExpiresAt   sql.NullString `json:"ttlExpiresAt,omitempty"`
 	CreatedAt      string         `json:"createdAt"`
-	UpdatedAt      string         `json:"updatedAt"`
 	StartedAt      sql.NullString `json:"startedAt,omitempty"`
 	FinishedAt     sql.NullString `json:"finishedAt,omitempty"`
+	Error          sql.NullString `json:"error,omitempty"`
+	PagesCrawled   int            `json:"pagesCrawled"`
+	URLsDiscovered int            `json:"urlsDiscovered"`
+	IssuesFound    int            `json:"issuesFound"`
+	TTLExpiresAt   sql.NullString `json:"ttlExpiresAt,omitempty"`
 }
 
 // URL represents a discovered URL within a crawl.

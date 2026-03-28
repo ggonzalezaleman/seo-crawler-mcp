@@ -9,19 +9,19 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 -- crawl_jobs: top-level crawl session
 -- ============================================================
 CREATE TABLE IF NOT EXISTS crawl_jobs (
-    id              TEXT NOT NULL PRIMARY KEY,
-    type            TEXT NOT NULL DEFAULT 'full',
-    status          TEXT NOT NULL DEFAULT 'pending',
-    config_json     TEXT NOT NULL DEFAULT '{}',
-    seed_urls       TEXT NOT NULL DEFAULT '[]',
-    urls_discovered INTEGER NOT NULL DEFAULT 0,
-    urls_crawled    INTEGER NOT NULL DEFAULT 0,
-    urls_errored    INTEGER NOT NULL DEFAULT 0,
-    ttl_expires_at  TEXT,
-    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    id              TEXT    NOT NULL PRIMARY KEY,
+    type            TEXT    NOT NULL DEFAULT 'crawl',
+    status          TEXT    NOT NULL DEFAULT 'queued',
+    config_json     TEXT    NOT NULL DEFAULT '{}',
+    seed_urls       TEXT    NOT NULL DEFAULT '[]',
+    created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     started_at      TEXT,
-    finished_at     TEXT
+    finished_at     TEXT,
+    error           TEXT,
+    pages_crawled   INTEGER NOT NULL DEFAULT 0,
+    urls_discovered INTEGER NOT NULL DEFAULT 0,
+    issues_found    INTEGER NOT NULL DEFAULT 0,
+    ttl_expires_at  TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_crawl_jobs_status ON crawl_jobs(status);
