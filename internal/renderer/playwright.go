@@ -78,21 +78,28 @@ with sync_playwright() as p:
     page.goto(url, wait_until="networkidle", timeout=30000)
     page.wait_for_timeout(2000)
 
-    # Collect links before interaction
-    initial_links = set(page.evaluate("""
+    # Collect links incrementally after each interaction
+    all_found = set(page.evaluate("""
         () => [...document.querySelectorAll('a[href]')].map(a => a.href)
     """))
 
-    # Menu discovery: click nav triggers
+    # Menu discovery: click nav triggers and collect links after EACH click
     menu_labels = ["services", "products", "solutions", "resources", "company", "more", "explore"]
 
-    # Click text-based triggers in header/nav
     for label in menu_labels:
         try:
-            el = page.locator("header >> text=/" + label + "/i, nav >> text=/" + label + "/i").first
-            if el.is_visible(timeout=500):
-                el.click()
-                page.wait_for_timeout(500)
+            for variant in [label.capitalize(), label.upper(), label.lower()]:
+                try:
+                    el = page.locator(f"text={variant}").first
+                    if el.is_visible(timeout=300):
+                        el.click()
+                        page.wait_for_timeout(500)
+                        # Collect links RIGHT AFTER this click (before next click closes the menu)
+                        new_links = page.evaluate("() => [...document.querySelectorAll('a[href]')].map(a => a.href)")
+                        all_found.update(new_links)
+                        break
+                except:
+                    continue
         except:
             pass
 
@@ -105,46 +112,48 @@ with sync_playwright() as p:
             if t.is_visible(timeout=200):
                 t.click()
                 page.wait_for_timeout(300)
+                new_links = page.evaluate("() => [...document.querySelectorAll('a[href]')].map(a => a.href)")
+                all_found.update(new_links)
         except:
             pass
 
-    # Collect links after desktop interaction
-    desktop_links = set(page.evaluate("""
-        () => [...document.querySelectorAll('a[href]')].map(a => a.href)
-    """))
-
-    # Mobile viewport
+    # Mobile viewport: use JS-only approach to avoid Playwright locator timeouts
     page.set_viewport_size({"width": 390, "height": 844})
     page.wait_for_timeout(500)
 
-    # Click mobile menu triggers
-    for selector in ["button:has-text('Menu')", "button[aria-label*='menu' i]", ".hamburger", ".menu-toggle"]:
-        try:
-            el = page.locator(selector).first
-            if el.is_visible(timeout=500):
-                el.click()
-                page.wait_for_timeout(500)
-                # Click sub-menus
-                for label in menu_labels:
-                    try:
-                        sub = page.locator("text=/" + label + "/i").first
-                        if sub.is_visible(timeout=300):
-                            sub.click()
-                            page.wait_for_timeout(300)
-                    except:
-                        pass
-                break
-        except:
-            pass
+    # Click hamburger + collect links via pure JS (fast, no locator waits)
+    page.evaluate("""() => {
+        // Click hamburger
+        for (const b of document.querySelectorAll('button')) {
+            const t = b.textContent.trim().toLowerCase();
+            const al = (b.getAttribute('aria-label') || '').toLowerCase();
+            if (t === 'menu' || al.includes('menu') || al.includes('nav')) {
+                b.click();
+                return;
+            }
+        }
+    }""")
+    page.wait_for_timeout(800)
+    all_found.update(page.evaluate("() => [...document.querySelectorAll('a[href]')].map(a => a.href)"))
 
-    # Collect all links after all interactions
-    all_links = set(page.evaluate("""
-        () => [...document.querySelectorAll('a[href]')].map(a => a.href)
-    """))
+    # Click any sub-menu triggers via JS
+    page.evaluate("""() => {
+        const labels = ['services','products','solutions','resources','company'];
+        for (const el of document.querySelectorAll('header *, nav *, [role=navigation] *')) {
+            const t = el.textContent.trim().toLowerCase();
+            if (labels.includes(t)) { el.click(); break; }
+        }
+    }""")
+    page.wait_for_timeout(500)
+    all_found.update(page.evaluate("() => [...document.querySelectorAll('a[href]')].map(a => a.href)"))
+
+    # Collect any remaining links
+    final_links = page.evaluate("() => [...document.querySelectorAll('a[href]')].map(a => a.href)")
+    all_found.update(final_links)
 
     # Get final HTML
     result["html"] = page.content()
-    result["links"] = list(all_links)
+    result["links"] = list(all_found)
 
     browser.close()
 

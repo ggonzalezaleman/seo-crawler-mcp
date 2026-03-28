@@ -1017,6 +1017,7 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 		renderedEdges := crawl.BuildEdges(kp.urlID, renderFinalURL, page, e.scopeChecker, "browser")
 
 		// Find NEW links: in rendered edges but not already in static edges for this source
+		// We only count edges to OTHER pages (exclude self-links that normalize to same URL)
 		existingEdges := map[string]bool{}
 		edgeRows, edgeErr := e.db.Query(
 			`SELECT declared_target_url FROM edges WHERE job_id = ? AND source_url_id = ? AND discovery_mode = 'static'`,
