@@ -302,5 +302,46 @@ func TestFullCrawl(t *testing.T) {
 		}
 	}
 
+	// --- Verify image assets were HEAD-checked ---
+	assets, assetsErr := db.GetAssetsByJob(job.ID, 100)
+	if assetsErr != nil {
+		t.Fatalf("querying assets: %v", assetsErr)
+	}
+	if len(assets) < 3 {
+		t.Errorf("expected at least 3 image assets, got %d", len(assets))
+	}
+	// Check that at least one has a 200 status and image content type
+	foundOK := false
+	for _, a := range assets {
+		if a.StatusCode.Valid && a.StatusCode.Int64 == 200 &&
+			a.ContentType.Valid && (
+			a.ContentType.String == "image/jpeg" ||
+				a.ContentType.String == "image/png" ||
+				a.ContentType.String == "image/gif") {
+			foundOK = true
+			break
+		}
+	}
+	if !foundOK {
+		t.Error("expected at least one image asset with 200 status and image/* content-type")
+	}
+
+	// Verify asset_references link images to the gallery page
+	refRows, refErr := db.Query(
+		`SELECT COUNT(*) FROM asset_references WHERE job_id = ? AND source_page_url_id = ?`,
+		job.ID, galleryRec.ID,
+	)
+	if refErr != nil {
+		t.Fatalf("querying asset_references: %v", refErr)
+	}
+	defer refRows.Close()
+	var refCount int
+	if refRows.Next() {
+		refRows.Scan(&refCount)
+	}
+	if refCount < 3 {
+		t.Errorf("expected at least 3 asset references from gallery page, got %d", refCount)
+	}
+
 	t.Log("integration test completed successfully")
 }

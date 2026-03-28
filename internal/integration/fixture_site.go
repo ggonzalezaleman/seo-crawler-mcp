@@ -240,6 +240,22 @@ func NewFixtureSite() *httptest.Server {
 		))
 	})
 
+	// ---- Image assets (serve minimal content for HEAD checks) ----
+	for _, imgPath := range []string{"/images/photo1.jpg", "/images/photo2.png", "/images/photo3.gif"} {
+		path := imgPath
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			ct := "image/jpeg"
+			if strings.HasSuffix(path, ".png") {
+				ct = "image/png"
+			} else if strings.HasSuffix(path, ".gif") {
+				ct = "image/gif"
+			}
+			w.Header().Set("Content-Type", ct)
+			w.Header().Set("Content-Length", "1024")
+			w.WriteHeader(http.StatusOK)
+		})
+	}
+
 	// ---- Hidden page (orphan: only in sitemap, no inbound links) ----
 	mux.HandleFunc("/hidden-page", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")

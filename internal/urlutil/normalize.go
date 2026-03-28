@@ -307,3 +307,17 @@ func IsDroppedScheme(rawURL string) bool {
 	}
 	return false
 }
+
+// ResolveReference resolves a possibly relative reference against a base URL.
+// Returns the resolved URL string, or empty string on error.
+func ResolveReference(baseURL, ref string) string {
+	base, err := url.Parse(baseURL)
+	if err != nil {
+		return ""
+	}
+	rel, err := url.Parse(ref)
+	if err != nil {
+		return ""
+	}
+	return base.ResolveReference(rel).String()
+}
