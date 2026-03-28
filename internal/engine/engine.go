@@ -860,7 +860,7 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 	// 4. Check renderer availability
 	if e.renderer == nil {
 		log.Printf("engine: sitemap gap detected but no renderer available, skipping escalation")
-		detailsJSON := fmt.Sprintf(`{"gapCount":%d,"pagesReRendered":0,"newLinksFound":0,"newURLsQueued":0,"reason":"no_renderer"}`, len(gap))
+		detailsJSON := fmt.Sprintf(`{"gapCount":%d,"pagesReRendered":0,"newLinksFound":0,"newURLsDiscovered":0,"reason":"no_renderer"}`, len(gap))
 		e.db.InsertEvent(jobID, "sitemap_gap_escalation", &detailsJSON, nil)
 		return 0
 	}
@@ -903,7 +903,7 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 
 	// 6. Re-render each key page with the browser
 	newLinksFound := 0
-	newURLsQueued := 0
+	newURLsDiscovered := 0
 	pagesReRendered := 0
 
 	for _, kp := range keyPages {
@@ -992,7 +992,7 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 
 			// If this URL is in the gap set, it's a successful escalation
 			if gapSet[norm] {
-				newURLsQueued++
+				newURLsDiscovered++
 				log.Printf("engine: sitemap gap: browser discovered gap URL %s via %s", norm, kp.url)
 			}
 		}
@@ -1000,12 +1000,12 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 
 	// 7. Log the escalation event
 	detailsJSON := fmt.Sprintf(
-		`{"gapCount":%d,"pagesReRendered":%d,"newLinksFound":%d,"newURLsQueued":%d}`,
-		len(gap), pagesReRendered, newLinksFound, newURLsQueued,
+		`{"gapCount":%d,"pagesReRendered":%d,"newLinksFound":%d,"newURLsDiscovered":%d}`,
+		len(gap), pagesReRendered, newLinksFound, newURLsDiscovered,
 	)
 	e.db.InsertEvent(jobID, "sitemap_gap_escalation", &detailsJSON, nil)
 
-	return newURLsQueued
+	return newURLsDiscovered
 }
 
 // persistItem saves a single crawl result to the database inside a single transaction.
