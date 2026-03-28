@@ -25,7 +25,14 @@ func DefaultGlobalConfig() GlobalConfig {
 
 // DetectGlobalIssues runs all Phase 2 (global) issue detectors against a completed crawl job.
 // Returns the total number of new issues inserted.
+// The function is idempotent: it deletes any existing global issues before re-detecting.
 func DetectGlobalIssues(db *storage.DB, jobID string, cfg GlobalConfig) (int, error) {
+	// Idempotency guard: clear existing global issues so retries are safe.
+	_, err := db.Exec("DELETE FROM issues WHERE job_id = ? AND scope = 'global'", jobID)
+	if err != nil {
+		return 0, fmt.Errorf("clearing existing global issues: %w", err)
+	}
+
 	detectors := []func(*storage.DB, string, GlobalConfig) (int, error){
 		detectDuplicateTitles,
 		detectDuplicateDescriptions,
@@ -84,7 +91,19 @@ type duplicateGroup struct {
 	fetchSeqs []int64
 }
 
+// allowedDuplicateFields whitelists column names that may be interpolated into SQL
+// for duplicate detection queries, preventing SQL injection.
+var allowedDuplicateFields = map[string]bool{
+	"title":            true,
+	"meta_description": true,
+	"content_hash":     true,
+}
+
 func queryDuplicateGroups(db *storage.DB, jobID, field string) ([]duplicateGroup, error) {
+	if !allowedDuplicateFields[field] {
+		return nil, fmt.Errorf("invalid duplicate detection field: %q", field)
+	}
+
 	query := fmt.Sprintf(`
 		SELECT p.%s, GROUP_CONCAT(p.url_id), GROUP_CONCAT(f.fetch_seq)
 		FROM pages p
@@ -535,6 +554,13 @@ func detectCanonicalToRedirect(db *storage.DB, jobID string, _ GlobalConfig) (in
 	return len(redirects), nil
 }
 
+// allowedPaginationColumns whitelists column names that may be interpolated into SQL
+// for pagination chain queries, preventing SQL injection.
+var allowedPaginationColumns = map[string]bool{
+	"rel_next_url": true,
+	"rel_prev_url": true,
+}
+
 func detectBrokenPaginationChain(db *storage.DB, jobID string, _ GlobalConfig) (int, error) {
 	type paginationEdge struct {
 		urlID     int64
@@ -550,6 +576,9 @@ func detectBrokenPaginationChain(db *storage.DB, jobID string, _ GlobalConfig) (
 		{column: "rel_next_url", relType: "next"},
 		{column: "rel_prev_url", relType: "prev"},
 	} {
+		if !allowedPaginationColumns[relation.column] {
+			return 0, fmt.Errorf("invalid pagination column: %q", relation.column)
+		}
 		query := fmt.Sprintf(`
 			SELECT p.url_id, p.%s
 			FROM pages p
