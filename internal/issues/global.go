@@ -104,6 +104,7 @@ func queryDuplicateGroups(db *storage.DB, jobID, field string) ([]duplicateGroup
 		return nil, fmt.Errorf("invalid duplicate detection field: %q", field)
 	}
 
+	// nosemgrep: go.lang.security.audit.database.string-formatted-query.string-formatted-query
 	query := fmt.Sprintf(`
 		SELECT p.%s, GROUP_CONCAT(p.url_id), GROUP_CONCAT(f.fetch_seq)
 		FROM pages p
@@ -579,6 +580,7 @@ func detectBrokenPaginationChain(db *storage.DB, jobID string, _ GlobalConfig) (
 		if !allowedPaginationColumns[relation.column] {
 			return 0, fmt.Errorf("invalid pagination column: %q", relation.column)
 		}
+		// nosemgrep: go.lang.security.audit.database.string-formatted-query.string-formatted-query
 		query := fmt.Sprintf(`
 			SELECT p.url_id, p.%s
 			FROM pages p

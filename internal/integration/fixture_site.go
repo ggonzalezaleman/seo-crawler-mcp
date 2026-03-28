@@ -3,6 +3,7 @@ package integration
 
 import (
 	"fmt"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,6 +26,8 @@ func NewFixtureSite() *httptest.Server {
 		scheme := "http"
 		host := r.Host
 		base := scheme + "://" + host
+
+		base = html.EscapeString(base)
 
 		w.Header().Set("Content-Type", "application/xml")
 		fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
@@ -108,14 +111,17 @@ func NewFixtureSite() *httptest.Server {
 		host := r.Host
 		base := scheme + "://" + host
 
+		safeBase := html.EscapeString(base)
+		headExtra := `<script type="application/ld+json">
+			{"@context":"https://schema.org","@type":"BlogPosting","headline":"SEO Basics Guide","author":{"@type":"Person","name":"Test Author"}}
+			</script>
+			<link rel="alternate" hreflang="es" href="` + safeBase + `/blog/post-1-es">
+			<link rel="alternate" hreflang="en" href="` + safeBase + `/blog/post-1">`
+
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, wrapHTML("SEO Basics Guide - Test Blog", "A comprehensive guide to search engine optimization basics for beginners",
 			`<h1>SEO Basics Guide</h1>`+longParagraph("post-1")+`<a href="/blog">Back to Blog</a>`,
-			fmt.Sprintf(`<script type="application/ld+json">
-			{"@context":"https://schema.org","@type":"BlogPosting","headline":"SEO Basics Guide","author":{"@type":"Person","name":"Test Author"}}
-			</script>
-			<link rel="alternate" hreflang="es" href="%s/blog/post-1-es">
-			<link rel="alternate" hreflang="en" href="%s/blog/post-1">`, base, base),
+			headExtra,
 		))
 	})
 
@@ -142,13 +148,8 @@ func NewFixtureSite() *httptest.Server {
 	mux.HandleFunc("/blog/post-4", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		// No <title> and no meta description
-		fmt.Fprint(w, `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"></head>
-<body>
-<h1>Post Without Meta Tags</h1>`+longParagraph("post-4")+`
-<a href="/blog">Back to Blog</a>
-</body></html>`)
+		body := `<h1>Post Without Meta Tags</h1>` + longParagraph("post-4") + `<a href="/blog">Back to Blog</a>`
+		fmt.Fprint(w, wrapHTML("", "", body, ""))
 	})
 
 	// ---- Blog Post 5: Multiple H1 tags ----
@@ -182,10 +183,12 @@ func NewFixtureSite() *httptest.Server {
 		host := r.Host
 		base := scheme + "://" + host
 
+		safeBase := html.EscapeString(base)
+
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, wrapHTML("Basic Widget - Test Site", "The basic widget product page with all the details you need to know",
 			`<h1>Basic Widget</h1>`+longParagraph("widget")+`<a href="/products">All Products</a>`,
-			fmt.Sprintf(`<link rel="canonical" href="%s/products/widget-pro">`, base),
+			`<link rel="canonical" href="`+safeBase+`/products/widget-pro">`,
 		))
 	})
 
@@ -195,10 +198,12 @@ func NewFixtureSite() *httptest.Server {
 		host := r.Host
 		base := scheme + "://" + host
 
+		safeBase := html.EscapeString(base)
+
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprint(w, wrapHTML("Widget Pro - Test Site", "The professional widget with advanced features and premium quality materials",
 			`<h1>Widget Pro</h1>`+longParagraph("widget-pro")+`<a href="/products">All Products</a>`,
-			fmt.Sprintf(`<link rel="canonical" href="%s/products/widget-pro">`, base),
+			`<link rel="canonical" href="`+safeBase+`/products/widget-pro">`,
 		))
 	})
 
@@ -246,16 +251,22 @@ func NewFixtureSite() *httptest.Server {
 // wrapHTML builds a complete HTML document.
 func wrapHTML(title, description, body, headExtra string) string {
 	var sb strings.Builder
+	safeTitle := html.EscapeString(title)
+	safeDescription := html.EscapeString(description)
 	sb.WriteString(`<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">`)
-	if title != "" {
-		sb.WriteString(fmt.Sprintf("\n<title>%s</title>", title))
+	if safeTitle != "" {
+		sb.WriteString("\n<title>")
+		sb.WriteString(safeTitle)
+		sb.WriteString("</title>")
 	}
-	if description != "" {
-		sb.WriteString(fmt.Sprintf(`
-<meta name="description" content="%s">`, description))
+	if safeDescription != "" {
+		sb.WriteString(`
+<meta name="description" content="`)
+		sb.WriteString(safeDescription)
+		sb.WriteString(`">`)
 	}
 	if headExtra != "" {
 		sb.WriteString("\n")
