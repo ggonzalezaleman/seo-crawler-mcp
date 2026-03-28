@@ -46,6 +46,8 @@ func NewServer(cfg ServerConfig) *Server {
 
 	s.mcpServer = mcpSrv
 	s.registerTools()
+	s.registerResources()
+	s.registerPrompts()
 	return s
 }
 
