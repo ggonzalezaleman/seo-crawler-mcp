@@ -14,12 +14,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"net/http"
+
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/config"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/crawl"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/fetcher"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/frontier"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/issues"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/parser"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/renderer"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/robots"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/ssrf"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
@@ -34,6 +37,7 @@ type EngineConfig struct {
 	ScopeChecker *urlutil.ScopeChecker
 	SSRFGuard    *ssrf.Guard
 	Config       *config.Config
+	Renderer     *renderer.Pool
 }
 
 // Engine orchestrates a complete crawl pipeline.
@@ -44,6 +48,7 @@ type Engine struct {
 	scopeChecker *urlutil.ScopeChecker
 	ssrfGuard    *ssrf.Guard
 	config       *config.Config
+	renderer     *renderer.Pool
 
 	// robotsRules caches parsed robots.txt per host during a crawl.
 	robotsRules   map[string]*robots.RobotsFile
@@ -59,6 +64,7 @@ func New(cfg EngineConfig) *Engine {
 		scopeChecker: cfg.ScopeChecker,
 		ssrfGuard:    cfg.SSRFGuard,
 		config:       cfg.Config,
+		renderer:     cfg.Renderer,
 	}
 }
 
@@ -493,6 +499,14 @@ loop:
 	close(persistQueue)
 	persisterWg.Wait()
 
+	// --- Post-crawl: sitemap gap browser escalation (hybrid/browser mode) ---
+	if completionErr == nil && e.config.RenderMode != config.RenderModeStatic {
+		escalated := e.sitemapGapEscalation(ctx, jobID)
+		if escalated > 0 {
+			log.Printf("engine: sitemap gap escalation discovered %d new URLs", escalated)
+		}
+	}
+
 	// --- Post-crawl: HEAD-check discovered image assets ---
 	if completionErr == nil {
 		e.headCheckAssets(ctx, jobID)
@@ -776,6 +790,222 @@ func (e *Engine) processParseResult(
 	}
 
 	return pr
+}
+
+// sitemapGapEscalation detects sitemap URLs with no inbound static HTML links,
+// re-renders key pages with the browser to discover JS-only navigation, and
+// queues any newly discovered URLs. Returns the number of new URLs queued.
+func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
+	// 1. Get all sitemap entry URLs for this job
+	sitemapURLs := map[string]bool{}
+	rows, err := e.db.Query(
+		`SELECT DISTINCT se.url FROM sitemap_entries se WHERE se.job_id = ?`,
+		jobID,
+	)
+	if err != nil {
+		log.Printf("engine: sitemap gap: failed to query sitemap entries: %v", err)
+		return 0
+	}
+	for rows.Next() {
+		var u string
+		if scanErr := rows.Scan(&u); scanErr == nil {
+			// Normalize for consistent comparison
+			if norm, normErr := urlutil.Normalize(u); normErr == nil {
+				sitemapURLs[norm] = true
+			}
+		}
+	}
+	rows.Close()
+
+	if len(sitemapURLs) == 0 {
+		return 0
+	}
+
+	// 2. Get all URLs that have at least one inbound static HTML link edge
+	rows, err = e.db.Query(
+		`SELECT DISTINCT e.declared_target_url
+		 FROM edges e
+		 WHERE e.job_id = ? AND e.discovery_mode = 'static' AND e.is_internal = 1 AND e.relation_type = 'link'`,
+		jobID,
+	)
+	if err != nil {
+		log.Printf("engine: sitemap gap: failed to query static edges: %v", err)
+		return 0
+	}
+	linkedURLs := map[string]bool{}
+	for rows.Next() {
+		var u string
+		if scanErr := rows.Scan(&u); scanErr == nil {
+			if norm, normErr := urlutil.Normalize(u); normErr == nil {
+				linkedURLs[norm] = true
+			}
+		}
+	}
+	rows.Close()
+
+	// 3. Find the gap: sitemap URLs with NO static inbound links
+	var gap []string
+	for u := range sitemapURLs {
+		if !linkedURLs[u] {
+			gap = append(gap, u)
+		}
+	}
+
+	if len(gap) == 0 {
+		return 0
+	}
+
+	log.Printf("engine: sitemap gap: %d sitemap URLs have no static inbound links", len(gap))
+
+	// 4. Check renderer availability
+	if e.renderer == nil {
+		log.Printf("engine: sitemap gap detected but no renderer available, skipping escalation")
+		detailsJSON := fmt.Sprintf(`{"gapCount":%d,"pagesReRendered":0,"newLinksFound":0,"newURLsQueued":0,"reason":"no_renderer"}`, len(gap))
+		e.db.InsertEvent(jobID, "sitemap_gap_escalation", &detailsJSON, nil)
+		return 0
+	}
+
+	// 5. Get key pages to re-render (top 10 by outbound link count)
+	rows, err = e.db.Query(
+		`SELECT u.id, u.normalized_url
+		 FROM urls u
+		 WHERE u.job_id = ? AND u.status = 'fetched' AND u.is_internal = 1
+		 ORDER BY (SELECT COUNT(*) FROM edges e WHERE e.job_id = u.job_id AND e.source_url_id = u.id) DESC
+		 LIMIT 10`,
+		jobID,
+	)
+	if err != nil {
+		log.Printf("engine: sitemap gap: failed to query key pages: %v", err)
+		return 0
+	}
+	type keyPage struct {
+		urlID int64
+		url   string
+	}
+	var keyPages []keyPage
+	for rows.Next() {
+		var kp keyPage
+		if scanErr := rows.Scan(&kp.urlID, &kp.url); scanErr == nil {
+			keyPages = append(keyPages, kp)
+		}
+	}
+	rows.Close()
+
+	if len(keyPages) == 0 {
+		return 0
+	}
+
+	// Build gap set for fast lookup
+	gapSet := map[string]bool{}
+	for _, u := range gap {
+		gapSet[u] = true
+	}
+
+	// 6. Re-render each key page with the browser
+	newLinksFound := 0
+	newURLsQueued := 0
+	pagesReRendered := 0
+
+	for _, kp := range keyPages {
+		if ctx.Err() != nil {
+			break
+		}
+
+		renderResult, renderErr := e.renderer.Render(ctx, kp.url)
+		if renderErr != nil {
+			log.Printf("engine: sitemap gap: render failed for %s: %v", kp.url, renderErr)
+			continue
+		}
+		pagesReRendered++
+
+		// Parse the rendered HTML
+		page, parseErr := parser.ParseHTML([]byte(renderResult.HTML), renderResult.FinalURL, http.Header{})
+		if parseErr != nil {
+			log.Printf("engine: sitemap gap: parse failed for rendered %s: %v", kp.url, parseErr)
+			continue
+		}
+
+		// Build edges from rendered DOM
+		renderedEdges := crawl.BuildEdges(kp.urlID, renderResult.FinalURL, page, e.scopeChecker, "browser")
+
+		// Find NEW links: in rendered edges but not already in static edges for this source
+		existingEdges := map[string]bool{}
+		edgeRows, edgeErr := e.db.Query(
+			`SELECT declared_target_url FROM edges WHERE job_id = ? AND source_url_id = ? AND discovery_mode = 'static'`,
+			jobID, kp.urlID,
+		)
+		if edgeErr == nil {
+			for edgeRows.Next() {
+				var target string
+				if scanErr := edgeRows.Scan(&target); scanErr == nil {
+					if norm, normErr := urlutil.Normalize(target); normErr == nil {
+						existingEdges[norm] = true
+					}
+				}
+			}
+			edgeRows.Close()
+		}
+
+		for _, edge := range renderedEdges {
+			if edge.RelationType != "link" || !edge.IsInternal {
+				continue
+			}
+			norm := edge.NormalizedTargetURL
+			if norm == "" {
+				continue
+			}
+			if existingEdges[norm] {
+				continue
+			}
+
+			newLinksFound++
+
+			// Persist the new browser-discovered edge
+			parsed, parseErr := url.Parse(norm)
+			if parseErr != nil {
+				continue
+			}
+			targetHost := parsed.Hostname()
+			targetURLID, upsertErr := e.db.UpsertURL(jobID, norm, targetHost, "discovered", true, "browser")
+			if upsertErr != nil {
+				continue
+			}
+
+			var anchorText *string
+			if edge.AnchorText != "" {
+				anchorText = &edge.AnchorText
+			}
+			var relFlags *string
+			if edge.RelFlagsJSON != "" {
+				relFlags = &edge.RelFlagsJSON
+			}
+
+			e.db.Exec(
+				`INSERT INTO edges (job_id, source_url_id, normalized_target_url_id,
+					source_kind, relation_type, rel_flags_json, discovery_mode,
+					anchor_text, is_internal, declared_target_url)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				jobID, kp.urlID, targetURLID,
+				"rendered_dom", edge.RelationType, relFlags, "browser",
+				anchorText, 1, edge.DeclaredTargetURL,
+			)
+
+			// If this URL is in the gap set, it's a successful escalation
+			if gapSet[norm] {
+				newURLsQueued++
+				log.Printf("engine: sitemap gap: browser discovered gap URL %s via %s", norm, kp.url)
+			}
+		}
+	}
+
+	// 7. Log the escalation event
+	detailsJSON := fmt.Sprintf(
+		`{"gapCount":%d,"pagesReRendered":%d,"newLinksFound":%d,"newURLsQueued":%d}`,
+		len(gap), pagesReRendered, newLinksFound, newURLsQueued,
+	)
+	e.db.InsertEvent(jobID, "sitemap_gap_escalation", &detailsJSON, nil)
+
+	return newURLsQueued
 }
 
 // persistItem saves a single crawl result to the database inside a single transaction.
