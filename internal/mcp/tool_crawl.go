@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/url"
 
-	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/config"
 	gomcp "github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -51,7 +50,7 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 
 	rawURL, ok := args["url"].(string)
 	if !ok || rawURL == "" {
-		return gomcp.NewToolResultError("parameter %q is required"), nil
+		return gomcp.NewToolResultError("parameter \"url\" is required"), nil
 	}
 
 	parsed, err := url.ParseRequestURI(rawURL)
@@ -74,6 +73,10 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 	maxPages := 10000
 	if mp, ok := args["maxPages"].(float64); ok && mp > 0 {
 		maxPages = int(mp)
+	}
+	const maxPagesLimit = 100000
+	if maxPages > maxPagesLimit {
+		maxPages = maxPagesLimit
 	}
 
 	maxDepth := 50
@@ -165,18 +168,12 @@ func (s *Server) handleCrawlSite(ctx context.Context, req gomcp.CallToolRequest)
 		return gomcp.NewToolResultError(fmt.Sprintf("creating job: %v", err)), nil
 	}
 
-	// Start crawl in background (non-dryRun)
+	// Start crawl in background (non-dryRun).
+	// NOTE: We do NOT mutate s.config here — that would be a data race.
+	// Per-job config is already stored in the job's config_json field above.
+	// The engine reads config from the job record when starting a crawl.
 	if !dryRun && s.engine != nil {
 		go func() {
-			// Apply config overrides
-			if s.config != nil {
-				s.config.ScopeMode = config.ScopeMode(scopeMode)
-				s.config.AllowedHosts = allowedHosts
-				s.config.MaxPages = maxPages
-				s.config.MaxDepth = maxDepth
-				s.config.RenderMode = config.RenderMode(renderMode)
-				s.config.RespectRobots = respectRobots
-			}
 			_ = s.engine.RunCrawl(context.Background(), job.ID)
 		}()
 	}
@@ -195,7 +192,7 @@ func (s *Server) handleCrawlStatus(ctx context.Context, req gomcp.CallToolReques
 
 	jobID, ok := args["jobId"].(string)
 	if !ok || jobID == "" {
-		return gomcp.NewToolResultError("parameter %q is required"), nil
+		return gomcp.NewToolResultError("parameter \"jobId\" is required"), nil
 	}
 
 	if s.db == nil {
@@ -247,7 +244,7 @@ func (s *Server) handleCancelCrawl(ctx context.Context, req gomcp.CallToolReques
 
 	jobID, ok := args["jobId"].(string)
 	if !ok || jobID == "" {
-		return gomcp.NewToolResultError("parameter %q is required"), nil
+		return gomcp.NewToolResultError("parameter \"jobId\" is required"), nil
 	}
 
 	if s.db == nil {

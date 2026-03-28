@@ -37,18 +37,29 @@ var (
 	getCrawlResultsTool = gomcp.NewTool("get_crawl_results",
 		gomcp.WithDescription("Query detailed crawl results with filtering and pagination."),
 		gomcp.WithString("jobId", gomcp.Required(), gomcp.Description("Crawl job ID")),
-		gomcp.WithString("filter", gomcp.Description("Filter expression for results")),
-		gomcp.WithNumber("limit", gomcp.Description("Maximum results to return")),
-		gomcp.WithString("cursor", gomcp.Description("Pagination cursor")),
+		gomcp.WithString("view", gomcp.Description("Result view: pages, issues, external_links, response_codes"), gomcp.Enum("pages", "issues", "external_links", "response_codes")),
+		gomcp.WithNumber("limit", gomcp.Description("Maximum results to return (default 50, max 500)")),
+		gomcp.WithString("cursor", gomcp.Description("Pagination cursor (base64)")),
+		gomcp.WithString("issueType", gomcp.Description("Filter by issue type")),
+		gomcp.WithString("statusCodeFamily", gomcp.Description("Filter by status code family: 2xx, 3xx, 4xx, 5xx")),
+		gomcp.WithString("urlPattern", gomcp.Description("Filter by URL pattern (substring match)")),
+		gomcp.WithString("urlGroup", gomcp.Description("Filter by URL group")),
+		gomcp.WithNumber("minDepth", gomcp.Description("Filter by minimum depth")),
+		gomcp.WithNumber("maxDepth", gomcp.Description("Filter by maximum depth")),
+		gomcp.WithString("relationType", gomcp.Description("Filter by edge relation type")),
+		gomcp.WithString("contentType", gomcp.Description("Filter by content type")),
+		gomcp.WithString("targetDomain", gomcp.Description("Filter by target domain")),
 	)
 
 	getLinkGraphTool = gomcp.NewTool("get_link_graph",
-		gomcp.WithDescription("Get the link graph (edges) for a crawl job."),
+		gomcp.WithDescription("Get the link graph (edges) for a crawl job, centered on a specific URL."),
 		gomcp.WithString("jobId", gomcp.Required(), gomcp.Description("Crawl job ID")),
-		gomcp.WithNumber("urlId", gomcp.Description("Filter edges by source URL ID")),
-		gomcp.WithString("direction", gomcp.Description("Edge direction"), gomcp.Enum("outbound", "inbound")),
-		gomcp.WithNumber("limit", gomcp.Description("Maximum edges to return")),
+		gomcp.WithNumber("urlId", gomcp.Required(), gomcp.Description("URL ID to query edges for")),
+		gomcp.WithString("direction", gomcp.Description("Edge direction: inbound, outbound, both"), gomcp.Enum("outbound", "inbound", "both")),
+		gomcp.WithNumber("limit", gomcp.Description("Maximum edges to return (default 50, max 500)")),
 		gomcp.WithString("cursor", gomcp.Description("Pagination cursor")),
+		gomcp.WithString("relationType", gomcp.Description("Filter by relation type")),
+		gomcp.WithString("sourceKind", gomcp.Description("Filter by source kind")),
 	)
 
 	analyzeURLTool = gomcp.NewTool("analyze_url",
@@ -60,17 +71,20 @@ var (
 	checkRedirectsTool = gomcp.NewTool("check_redirects",
 		gomcp.WithDescription("Follow and report the redirect chain for a URL."),
 		gomcp.WithString("url", gomcp.Required(), gomcp.Description("URL to check redirects for")),
+		gomcp.WithNumber("maxHops", gomcp.Description("Maximum redirect hops to follow (default 10)")),
 	)
 
 	checkRobotsTxtTool = gomcp.NewTool("check_robots_txt",
 		gomcp.WithDescription("Fetch and parse robots.txt for a given host."),
 		gomcp.WithString("url", gomcp.Required(), gomcp.Description("URL whose host's robots.txt to check")),
+		gomcp.WithString("userAgent", gomcp.Description("User-agent to test rules against")),
+		gomcp.WithArray("testPaths", gomcp.Description("Paths to test against robots.txt rules"), gomcp.WithStringItems()),
 	)
 
 	parseSitemapTool = gomcp.NewTool("parse_sitemap",
 		gomcp.WithDescription("Parse a sitemap XML and return its entries."),
 		gomcp.WithString("url", gomcp.Required(), gomcp.Description("Sitemap URL to parse")),
-		gomcp.WithNumber("limit", gomcp.Description("Maximum entries to return")),
+		gomcp.WithNumber("maxEntries", gomcp.Description("Maximum entries to return (default 10000)")),
 	)
 )
 
