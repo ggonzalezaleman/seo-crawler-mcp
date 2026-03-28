@@ -982,13 +982,15 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 		var renderHTML string
 		var renderFinalURL string
 
+		var playwrightLinks []string
 		if renderer.IsPlaywrightAvailable() {
 			pwResult, pwErr := renderer.RenderWithPlaywright(ctx, kp.url)
 			if pwErr != nil {
 				log.Printf("engine: sitemap gap: playwright render failed for %s: %v, falling back to chromedp", kp.url, pwErr)
 			} else {
 				renderHTML = pwResult.HTML
-				renderFinalURL = kp.url // Playwright script doesn't track redirects; use original URL
+				renderFinalURL = kp.url
+				playwrightLinks = pwResult.Links // Links collected incrementally during menu clicks
 			}
 		}
 
@@ -1083,6 +1085,55 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 			if gapSet[norm] {
 				newURLsDiscovered++
 				log.Printf("engine: sitemap gap: browser discovered gap URL %s via %s", norm, kp.url)
+			}
+		}
+
+		// Also check Playwright-collected links directly (covers menus that close after click)
+		for _, pwLink := range playwrightLinks {
+			norm, normErr := urlutil.Normalize(pwLink)
+			if normErr != nil || norm == "" {
+				continue
+			}
+			if existingEdges[norm] {
+				continue
+			}
+			if !e.scopeChecker.IsInScope(norm) {
+				continue
+			}
+			// Already found via rendered edges?
+			alreadyCounted := false
+			for _, edge := range renderedEdges {
+				if edge.NormalizedTargetURL == norm {
+					alreadyCounted = true
+					break
+				}
+			}
+			if alreadyCounted {
+				continue
+			}
+
+			newLinksFound++
+			parsed, parseErr := url.Parse(norm)
+			if parseErr != nil {
+				continue
+			}
+			targetHost := parsed.Hostname()
+			targetURLID, upsertErr := e.db.UpsertURL(jobID, norm, targetHost, "discovered", true, "browser")
+			if upsertErr != nil {
+				continue
+			}
+			e.db.Exec(
+				`INSERT INTO edges (job_id, source_url_id, normalized_target_url_id,
+					source_kind, relation_type, discovery_mode,
+					is_internal, declared_target_url)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				jobID, kp.urlID, targetURLID,
+				"rendered_dom", "link", "browser",
+				1, pwLink,
+			)
+			if gapSet[norm] {
+				newURLsDiscovered++
+				log.Printf("engine: sitemap gap: playwright link discovered gap URL %s via %s", norm, kp.url)
 			}
 		}
 	}
