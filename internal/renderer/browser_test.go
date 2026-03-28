@@ -146,6 +146,78 @@ func TestPool_Concurrency(t *testing.T) {
 	}
 }
 
+// hiddenNavPage has a hamburger button that reveals links only when clicked.
+const hiddenNavPage = `<!DOCTYPE html>
+<html>
+<head><title>Hidden Nav</title></head>
+<body>
+<button aria-label="menu" id="hamburger" onclick="document.getElementById('nav').style.display='block'">☰</button>
+<nav id="nav" style="display:none">
+  <a href="/about">About</a>
+  <a href="/contact">Contact</a>
+  <a href="/pricing">Pricing</a>
+</nav>
+<main><p>Main content</p></main>
+</body>
+</html>`
+
+func TestRenderWithOptions_MenuDiscovery(t *testing.T) {
+	skipIfNoChrome(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(hiddenNavPage))
+	}))
+	defer srv.Close()
+
+	pool := NewPool(Options{
+		MaxSlots:      1,
+		RenderWaitMs:  500,
+		RenderTimeout: 30 * time.Second,
+	})
+	defer pool.Close()
+
+	ctx := context.Background()
+
+	// Without menu discovery: nav links are in the DOM but hidden (display:none).
+	// The HTML still contains the href attributes, but the nav is not expanded.
+	resultPlain, err := pool.Render(ctx, srv.URL)
+	if err != nil {
+		t.Fatalf("plain Render failed: %v", err)
+	}
+	// The hidden nav should have display:none in the style attribute.
+	if !strings.Contains(resultPlain.HTML, `display:none`) &&
+		!strings.Contains(resultPlain.HTML, `display: none`) {
+		t.Log("note: nav might already be visible without interaction")
+	}
+
+	// With menu discovery: the hamburger gets clicked, nav becomes visible.
+	resultMenu, err := pool.RenderWithOptions(ctx, srv.URL, RenderOptions{
+		DiscoverMenus: true,
+	})
+	if err != nil {
+		t.Fatalf("RenderWithOptions failed: %v", err)
+	}
+
+	// After clicking the hamburger, the nav should have display:block.
+	if !strings.Contains(resultMenu.HTML, `display:block`) &&
+		!strings.Contains(resultMenu.HTML, `display: block`) {
+		t.Errorf("expected nav to be visible (display:block) after menu discovery, HTML snippet: %s",
+			resultMenu.HTML[:min(500, len(resultMenu.HTML))])
+	}
+
+	// Verify the links are present in the expanded HTML.
+	for _, href := range []string{"/about", "/contact", "/pricing"} {
+		if !strings.Contains(resultMenu.HTML, href) {
+			t.Errorf("expected link %q in menu-discovered HTML", href)
+		}
+	}
+
+	if resultMenu.RenderTime <= 0 {
+		t.Error("expected positive RenderTime")
+	}
+}
+
 func TestPool_Close(t *testing.T) {
 	skipIfNoChrome(t)
 

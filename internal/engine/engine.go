@@ -977,7 +977,9 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 			break
 		}
 
-		renderResult, renderErr := e.renderer.Render(ctx, kp.url)
+		renderResult, renderErr := e.renderer.RenderWithOptions(ctx, kp.url, renderer.RenderOptions{
+			DiscoverMenus: true,
+		})
 		if renderErr != nil {
 			log.Printf("engine: sitemap gap: render failed for %s: %v", kp.url, renderErr)
 			continue
