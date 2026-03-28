@@ -467,6 +467,7 @@ func (e *Engine) processParseResult(
 		OGImage:              page.OpenGraph.Image,
 		JSONLDBlocks:         len(page.JSONLDBlocks),
 		MalformedJSONLD:      hasMalformedJSONLD(page.JSONLDBlocks),
+		JSONLDRaw:            marshalJSONLDBlocks(page.JSONLDBlocks),
 		WordCount:            page.ExtractedWordCount,
 		MainContentWordCount: page.MainContentWordCount,
 		ImagesWithoutAlt:     countImagesWithoutAlt(page.Images),
@@ -880,6 +881,17 @@ func jsonStrPtr(v any) *string {
 	}
 	s := string(data)
 	return &s
+}
+
+func marshalJSONLDBlocks(blocks []parser.JSONLDBlock) string {
+	if len(blocks) == 0 {
+		return ""
+	}
+	raw, err := json.Marshal(blocks)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
 
 func hasMalformedJSONLD(blocks []parser.JSONLDBlock) bool {

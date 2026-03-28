@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/parser"
 )
 
 // DetectedIssue represents a single SEO issue found on a page.
@@ -39,6 +41,7 @@ type PageContext struct {
 	OGImage              string
 	JSONLDBlocks         int
 	MalformedJSONLD      bool
+	JSONLDRaw            string
 	WordCount            int
 	MainContentWordCount int
 	ImagesWithoutAlt     int
@@ -172,6 +175,27 @@ func DetectPageLocalIssues(ctx PageContext, thresholds Thresholds, depth int) []
 	}
 	if ctx.MalformedJSONLD {
 		issues = append(issues, newIssue("malformed_structured_data", "warning", map[string]any{}))
+	}
+
+	// Validate structured data semantics
+	if ctx.JSONLDRaw != "" && ctx.JSONLDRaw != "[]" {
+		validationResults := parser.ValidateJSONLD(ctx.JSONLDRaw)
+		for _, r := range validationResults {
+			if len(r.MissingRequired) > 0 {
+				issues = append(issues, newIssue("invalid_structured_data", "warning", map[string]any{
+					"type":            r.Type,
+					"missingRequired": r.MissingRequired,
+					"scope":           "required",
+				}))
+			}
+			if len(r.MissingRecommended) > 0 {
+				issues = append(issues, newIssue("incomplete_structured_data", "info", map[string]any{
+					"type":               r.Type,
+					"missingRecommended": r.MissingRecommended,
+					"scope":              "recommended",
+				}))
+			}
+		}
 	}
 
 	// Content

@@ -508,3 +508,29 @@ func TestIssueCounts(t *testing.T) {
 		t.Errorf("expected exactly 1 status_4xx issue, got %d", count)
 	}
 }
+
+func TestDetectPageLocalIssues_InvalidStructuredData(t *testing.T) {
+	ctx := cleanPage()
+	// BlogPosting missing headline — should emit invalid_structured_data
+	ctx.JSONLDRaw = `[{"raw":"{\"@type\":\"BlogPosting\",\"author\":\"Jane\",\"datePublished\":\"2024-01-01\"}","type":"BlogPosting"}]`
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+
+	if !hasIssue(issues, "invalid_structured_data") {
+		t.Error("expected invalid_structured_data issue for BlogPosting missing headline")
+	}
+}
+
+func TestDetectPageLocalIssues_IncompleteStructuredData(t *testing.T) {
+	ctx := cleanPage()
+	// Organization with name but missing logo (recommended) — should emit incomplete_structured_data
+	ctx.JSONLDRaw = `[{"raw":"{\"@type\":\"Organization\",\"name\":\"My Org\"}","type":"Organization"}]`
+	issues := DetectPageLocalIssues(ctx, defaultThresholds(), 1)
+
+	if !hasIssue(issues, "incomplete_structured_data") {
+		t.Error("expected incomplete_structured_data issue for Organization missing recommended props")
+	}
+	// Should NOT have invalid_structured_data (name is present = all required met)
+	if hasIssue(issues, "invalid_structured_data") {
+		t.Error("unexpected invalid_structured_data — Organization has all required fields")
+	}
+}

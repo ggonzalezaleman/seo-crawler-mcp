@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -122,6 +123,7 @@ func (s *Server) handleAnalyzeURL(ctx context.Context, req gomcp.CallToolRequest
 		OGDescription:        parseResult.OpenGraph.Description,
 		OGImage:              parseResult.OpenGraph.Image,
 		JSONLDBlocks:         len(parseResult.JSONLDBlocks),
+		JSONLDRaw:            marshalJSONLDBlocksForStandalone(parseResult.JSONLDBlocks),
 		WordCount:            parseResult.ExtractedWordCount,
 		MainContentWordCount: parseResult.MainContentWordCount,
 		JSSuspect:            parseResult.JSSuspect,
@@ -406,4 +408,15 @@ func (s *Server) handleParseSitemap(ctx context.Context, req gomcp.CallToolReque
 	}
 
 	return gomcp.NewToolResultJSON(result)
+}
+
+func marshalJSONLDBlocksForStandalone(blocks []parser.JSONLDBlock) string {
+	if len(blocks) == 0 {
+		return ""
+	}
+	raw, err := json.Marshal(blocks)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
