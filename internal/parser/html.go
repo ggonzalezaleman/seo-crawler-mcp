@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/encoding"
@@ -140,11 +141,11 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 
 	// Title
 	r.Title = strings.TrimSpace(doc.Find("title").First().Text())
-	r.TitleLength = len(r.Title)
+	r.TitleLength = utf8.RuneCountInString(r.Title)
 
 	// Meta description
 	r.MetaDescription = doc.Find(`meta[name="description"]`).AttrOr("content", "")
-	r.DescriptionLength = len(r.MetaDescription)
+	r.DescriptionLength = utf8.RuneCountInString(r.MetaDescription)
 
 	// Meta robots
 	r.MetaRobots = doc.Find(`meta[name="robots"]`).AttrOr("content", "")
@@ -236,9 +237,29 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 		raw := strings.TrimSpace(s.Text())
 		block := JSONLDBlock{Raw: raw}
 
+		// Try as object first
 		var parsed map[string]interface{}
 		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
-			block.Malformed = true
+			// Try as array (e.g. [{"@type":"Organization"}, {"@type":"WebSite"}])
+			var arr []interface{}
+			if err := json.Unmarshal([]byte(raw), &arr); err != nil {
+				block.Malformed = true
+			} else {
+				var types []string
+				for _, item := range arr {
+					if m, ok := item.(map[string]interface{}); ok {
+						if t, ok := m["@type"]; ok {
+							if ts, ok := t.(string); ok {
+								types = append(types, ts)
+							}
+						}
+					}
+				}
+				if len(types) > 0 {
+					block.Type = strings.Join(types, ", ")
+					r.JSONLDTypes = append(r.JSONLDTypes, types...)
+				}
+			}
 		} else if t, ok := parsed["@type"]; ok {
 			if ts, ok := t.(string); ok {
 				block.Type = ts
@@ -266,7 +287,10 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 
 	// Images
 	doc.Find("img").Each(func(_ int, s *goquery.Selection) {
-		src := s.AttrOr("src", "")
+		src, srcExists := s.Attr("src")
+		if !srcExists || strings.TrimSpace(src) == "" {
+			return // skip images without src
+		}
 		alt, altExists := s.Attr("alt")
 		img := DiscoveredImage{
 			Src:        resolveURL(baseURL, src),

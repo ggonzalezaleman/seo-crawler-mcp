@@ -137,7 +137,7 @@ func fetchSitemapContent(url string, client *http.Client) ([]byte, error) {
 			return nil, fmt.Errorf("creating gzip reader for %q: %w", url, err)
 		}
 		defer gr.Close()
-		reader = gr
+		reader = io.LimitReader(gr, maxBodySize)
 	}
 
 	data, err := io.ReadAll(reader)

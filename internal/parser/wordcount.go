@@ -6,13 +6,26 @@ import (
 	"github.com/PuerkitoBio/goquery"
 )
 
-// ExtractVisibleText extracts all visible text from an HTML document.
+// ExtractVisibleText extracts all visible text from an HTML document
+// without mutating the original DOM tree.
 func ExtractVisibleText(doc *goquery.Document) string {
-	// Remove script and style elements before extracting text.
-	doc.Find("script, style, noscript").Each(func(_ int, s *goquery.Selection) {
-		s.Remove()
-	})
-	return strings.TrimSpace(doc.Find("body").Text())
+	var buf strings.Builder
+	var extract func(*goquery.Selection)
+	extract = func(s *goquery.Selection) {
+		s.Contents().Each(func(_ int, child *goquery.Selection) {
+			if child.Is("script, style, noscript") {
+				return
+			}
+			if goquery.NodeName(child) == "#text" {
+				buf.WriteString(child.Text())
+				buf.WriteByte(' ')
+			} else {
+				extract(child)
+			}
+		})
+	}
+	extract(doc.Find("body"))
+	return strings.TrimSpace(buf.String())
 }
 
 // ExtractMainContentText extracts text from main content areas.
