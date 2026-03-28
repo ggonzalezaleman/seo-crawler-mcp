@@ -5,12 +5,32 @@ import (
 	"sort"
 )
 
+// maxValidationResults caps the number of results to prevent runaway @graph arrays.
+const maxValidationResults = 50
+
 // SchemaValidationResult holds the validation outcome for a single JSON-LD object.
 type SchemaValidationResult struct {
 	Type               string   `json:"type"`
 	MissingRequired    []string `json:"missingRequired,omitempty"`
 	MissingRecommended []string `json:"missingRecommended,omitempty"`
 	Valid              bool     `json:"valid"`
+	Nested             bool     `json:"nested"`
+}
+
+// isEmptyValue returns true for nil, empty strings, empty slices, and empty maps.
+func isEmptyValue(val interface{}) bool {
+	if val == nil {
+		return true
+	}
+	switch v := val.(type) {
+	case string:
+		return v == ""
+	case []interface{}:
+		return len(v) == 0
+	case map[string]interface{}:
+		return len(v) == 0
+	}
+	return false
 }
 
 // ValidateJSONLD validates JSON-LD content against hardcoded Schema.org rules.
@@ -31,6 +51,9 @@ func ValidateJSONLD(raw string) []SchemaValidationResult {
 	var arr []json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &arr); err == nil {
 		for _, item := range arr {
+			if len(results) >= maxValidationResults {
+				break
+			}
 			results = append(results, validateRawItem(item, 0)...)
 		}
 		return results
@@ -112,6 +135,9 @@ func validateObject(obj map[string]interface{}, depth int) []SchemaValidationRes
 	if graph, ok := obj["@graph"]; ok {
 		if arr, ok := graph.([]interface{}); ok {
 			for _, item := range arr {
+				if len(results) >= maxValidationResults {
+					break
+				}
 				if nested, ok := item.(map[string]interface{}); ok {
 					results = append(results, validateObject(nested, depth+1)...)
 				}
@@ -132,13 +158,13 @@ func validateObject(obj map[string]interface{}, depth int) []SchemaValidationRes
 		var missingRequired, missingRecommended []string
 
 		for _, prop := range rule.Required {
-			if _, exists := obj[prop]; !exists {
+			if v, exists := obj[prop]; !exists || isEmptyValue(v) {
 				missingRequired = append(missingRequired, prop)
 			}
 		}
 
 		for _, prop := range rule.Recommended {
-			if _, exists := obj[prop]; !exists {
+			if v, exists := obj[prop]; !exists || isEmptyValue(v) {
 				missingRecommended = append(missingRecommended, prop)
 			}
 		}
@@ -151,6 +177,7 @@ func validateObject(obj map[string]interface{}, depth int) []SchemaValidationRes
 			MissingRequired:    missingRequired,
 			MissingRecommended: missingRecommended,
 			Valid:              len(missingRequired) == 0,
+			Nested:             depth > 0,
 		})
 	}
 
@@ -159,6 +186,9 @@ func validateObject(obj map[string]interface{}, depth int) []SchemaValidationRes
 		if key == "@graph" {
 			continue // Already handled above.
 		}
+		if len(results) >= maxValidationResults {
+			break
+		}
 		switch v := val.(type) {
 		case map[string]interface{}:
 			if _, hasType := v["@type"]; hasType {
@@ -166,6 +196,9 @@ func validateObject(obj map[string]interface{}, depth int) []SchemaValidationRes
 			}
 		case []interface{}:
 			for _, item := range v {
+				if len(results) >= maxValidationResults {
+					break
+				}
 				if nested, ok := item.(map[string]interface{}); ok {
 					if _, hasType := nested["@type"]; hasType {
 						results = append(results, validateObject(nested, depth+1)...)

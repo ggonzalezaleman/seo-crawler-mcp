@@ -216,3 +216,114 @@ func TestValidateJSONLD_MalformedBlockSkipped(t *testing.T) {
 		t.Errorf("expected 0 results for malformed block, got %d", len(results))
 	}
 }
+
+func TestValidateJSONLD_EmptyStringCountsAsMissing(t *testing.T) {
+	raw := `{"@type": "Article", "headline": "", "author": "X", "datePublished": "2024-01-01"}`
+	results := ValidateJSONLD(raw)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if r.Valid {
+		t.Error("expected Valid=false for empty headline")
+	}
+	found := false
+	for _, p := range r.MissingRequired {
+		if p == "headline" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected headline in missingRequired, got %v", r.MissingRequired)
+	}
+}
+
+func TestValidateJSONLD_NullValueCountsAsMissing(t *testing.T) {
+	raw := `{"@type": "Article", "headline": null, "author": "X", "datePublished": "2024-01-01"}`
+	results := ValidateJSONLD(raw)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if r.Valid {
+		t.Error("expected Valid=false for null headline")
+	}
+	found := false
+	for _, p := range r.MissingRequired {
+		if p == "headline" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected headline in missingRequired, got %v", r.MissingRequired)
+	}
+}
+
+func TestValidateJSONLD_NestedObjectsMarkedNested(t *testing.T) {
+	raw := `{
+		"@type": "BlogPosting",
+		"headline": "Test",
+		"author": "Jane",
+		"datePublished": "2024-01-01",
+		"publisher": {
+			"@type": "Organization",
+			"name": "My Org"
+		}
+	}`
+	results := ValidateJSONLD(raw)
+
+	for _, r := range results {
+		if r.Type == "BlogPosting" && r.Nested {
+			t.Error("expected BlogPosting Nested=false (top-level)")
+		}
+		if r.Type == "Organization" && !r.Nested {
+			t.Error("expected Organization Nested=true")
+		}
+	}
+}
+
+func TestValidateJSONLD_LargeGraphCappedAt50(t *testing.T) {
+	// Build a @graph with 100 Organization objects.
+	raw := `{"@graph": [`
+	for i := 0; i < 100; i++ {
+		if i > 0 {
+			raw += ","
+		}
+		raw += `{"@type": "Organization", "name": "Org"}`
+	}
+	raw += `]}`
+
+	results := ValidateJSONLD(raw)
+
+	if len(results) > 50 {
+		t.Errorf("expected at most 50 results, got %d", len(results))
+	}
+}
+
+func TestValidateJSONLD_EmptyArrayCountsAsMissing(t *testing.T) {
+	raw := `{"@type": "Product", "name": []}`
+	results := ValidateJSONLD(raw)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if r.Valid {
+		t.Error("expected Valid=false for empty array name")
+	}
+}
+
+func TestValidateJSONLD_EmptyObjectCountsAsMissing(t *testing.T) {
+	raw := `{"@type": "Product", "name": {}}`
+	results := ValidateJSONLD(raw)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if r.Valid {
+		t.Error("expected Valid=false for empty object name")
+	}
+}

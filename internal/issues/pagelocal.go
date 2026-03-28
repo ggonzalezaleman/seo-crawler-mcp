@@ -188,7 +188,7 @@ func DetectPageLocalIssues(ctx PageContext, thresholds Thresholds, depth int) []
 					"scope":           "required",
 				}))
 			}
-			if len(r.MissingRecommended) > 0 {
+			if len(r.MissingRecommended) > 0 && !r.Nested {
 				issues = append(issues, newIssue("incomplete_structured_data", "info", map[string]any{
 					"type":               r.Type,
 					"missingRecommended": r.MissingRecommended,
