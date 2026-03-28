@@ -25,7 +25,7 @@ func ExtractJSONLD(doc *goquery.Document) []JSONLDBlockParsed {
 			return
 		}
 
-		var parsed interface{}
+		var parsed interface{} // nosemgrep: go.lang.security.deserialization.unsafe-deserialization-interface.go-unsafe-deserialization-interface
 		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 			blocks = append(blocks, JSONLDBlockParsed{
 				Raw:       raw,

@@ -62,6 +62,7 @@ func New(opts Options) *Fetcher {
 		DisableCompression: true, // We handle decompression manually.
 		TLSClientConfig: &tls.Config{
 			InsecureSkipVerify: opts.AllowInsecureTLS, //nolint:gosec
+			MinVersion:         tls.VersionTLS12,
 		},
 	}
 
