@@ -83,7 +83,7 @@ func main() {
 		})
 		defer renderPool.Close()
 	}
-	_ = renderPool // available for future engine wiring
+	// renderPool is passed to the engine for hybrid rendering
 
 	rl := fetcher.NewRateLimiter(cfg.PerHostConcurrency)
 
@@ -95,6 +95,7 @@ func main() {
 		RateLimiter: rl,
 		SSRFGuard:   guard,
 		Config:      cfg,
+		Renderer:    renderPool,
 	})
 
 	srv := mcp.NewServer(mcp.ServerConfig{
