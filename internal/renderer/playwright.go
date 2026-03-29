@@ -193,6 +193,21 @@ with sync_playwright() as p:
     final_links = page.evaluate("() => [...document.querySelectorAll('a[href]')].map(a => a.href)")
     all_found.update(final_links)
 
+    # Scroll the full page to trigger lazy-loaded content (intersection observers)
+    prev_height = 0
+    for _ in range(60):
+        page.evaluate("window.scrollBy(0, 800)")
+        page.wait_for_timeout(200)
+        curr_height = page.evaluate("document.body.scrollHeight")
+        if curr_height == prev_height:
+            break
+        prev_height = curr_height
+    page.evaluate("window.scrollTo(0, 0)")
+    page.wait_for_timeout(500)
+
+    # Collect any links that appeared after scroll
+    all_found.update(page.evaluate("() => [...document.querySelectorAll('a[href]')].map(a => a.href)"))
+
     # Get final HTML
     result["html"] = page.content()
     result["links"] = list(all_found)
