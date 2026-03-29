@@ -1070,11 +1070,31 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 		}
 		pagesReRendered++
 
-		// Parse the rendered HTML
+		// Parse the rendered HTML (includes lazy-loaded content after full scroll)
 		page, parseErr := parser.ParseHTML([]byte(renderHTML), renderFinalURL, http.Header{})
 		if parseErr != nil {
 			log.Printf("engine: sitemap gap: parse failed for rendered %s: %v", kp.url, parseErr)
 			continue
+		}
+
+		// Update the page record if browser rendering found more content (lazy loading)
+		if page.ExtractedWordCount > 0 {
+			e.db.Exec(`
+				UPDATE pages SET
+					word_count = MAX(COALESCE(word_count, 0), ?),
+					main_content_word_count = MAX(COALESCE(main_content_word_count, 0), ?),
+					content_hash = CASE WHEN ? > COALESCE(word_count, 0) THEN ? ELSE content_hash END,
+					h1_json = CASE WHEN ? > COALESCE(word_count, 0) THEN ? ELSE h1_json END,
+					h2_json = CASE WHEN ? > COALESCE(word_count, 0) THEN ? ELSE h2_json END,
+					images_json = CASE WHEN ? > COALESCE((SELECT COUNT(*) FROM json_each(images_json)), 0) THEN ? ELSE images_json END
+				WHERE job_id = ? AND url_id = ?`,
+				page.ExtractedWordCount, page.MainContentWordCount,
+				page.ExtractedWordCount, page.ContentHash,
+				page.ExtractedWordCount, marshalStringSlice(page.Headings.H1),
+				page.ExtractedWordCount, marshalStringSlice(page.Headings.H2),
+				len(page.Images), marshalImages(page.Images),
+				jobID, kp.urlID,
+			)
 		}
 
 		// Build edges from rendered DOM
@@ -1803,6 +1823,22 @@ func jsonStrPtr(v any) *string {
 	}
 	s := string(data)
 	return &s
+}
+
+func marshalStringSlice(items []string) string {
+	raw, err := json.Marshal(items)
+	if err != nil {
+		return "[]"
+	}
+	return string(raw)
+}
+
+func marshalImages(images []parser.DiscoveredImage) string {
+	raw, err := json.Marshal(images)
+	if err != nil {
+		return "[]"
+	}
+	return string(raw)
 }
 
 func marshalJSONLDBlocks(blocks []parser.JSONLDBlock) string {
