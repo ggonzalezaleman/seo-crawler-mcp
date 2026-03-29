@@ -1677,18 +1677,12 @@ func (e *Engine) runLighthouseAudits(ctx context.Context, jobID string) {
 	close(work)
 
 	// Rate limiter: 1 call per 500ms across all workers (PSI allows 25K/day)
-	rateTicker := time.NewTicker(1500 * time.Millisecond)
+	rateTicker := time.NewTicker(1000 * time.Millisecond)
 	defer rateTicker.Stop()
-	rateCh := make(chan struct{})
-	go func() {
-		defer close(rateCh)
-		for range work {
-			// Pre-seed one token per work item
-		}
-	}()
+	// Rate limiting handled by rateTicker in worker loop
 
 	var mu sync.Mutex
-	var audited int
+	var audited, failed int
 
 	const psiWorkers = 2
 	var wg sync.WaitGroup
@@ -1710,6 +1704,9 @@ func (e *Engine) runLighthouseAudits(ctx context.Context, jobID string) {
 
 				result, psiErr := lighthouse.FetchPSI(ctx, item.url, e.config.PSIAPIKey, item.strategy)
 				if psiErr != nil {
+					mu.Lock()
+					failed++
+					mu.Unlock()
 					log.Printf("engine: PSI audit failed for %s (%s): %v", item.url, item.strategy, psiErr)
 					continue
 				}
@@ -1727,7 +1724,7 @@ func (e *Engine) runLighthouseAudits(ctx context.Context, jobID string) {
 	}
 	wg.Wait()
 
-	log.Printf("engine: completed PSI audits (%d results)", audited)
+	log.Printf("engine: completed PSI audits (%d results, %d failed)", audited, failed)
 }
 
 // runAxeAudits runs axe-core accessibility audits on all crawled pages
