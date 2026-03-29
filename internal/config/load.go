@@ -62,6 +62,8 @@ type tomlConfig struct {
 	DBPath           string `toml:"db_path"`
 	MaxJobAge        string `toml:"max_job_age"`
 	PSIAPIKey        string `toml:"psi_api_key"`
+	PSIDesktop       bool   `toml:"psi_desktop"`
+	LanguageToolURL  string `toml:"languagetool_url"`
 }
 
 // LoadConfig loads configuration with precedence: env vars > config file > defaults.
@@ -222,6 +224,12 @@ func LoadFromFile(path string) (*Config, error) {
 	}
 	if tc.PSIAPIKey != "" {
 		cfg.PSIAPIKey = tc.PSIAPIKey
+	}
+	if tc.PSIDesktop {
+		cfg.PSIDesktop = true
+	}
+	if tc.LanguageToolURL != "" {
+		cfg.LanguageToolURL = tc.LanguageToolURL
 	}
 
 	return &cfg, nil
@@ -391,6 +399,12 @@ func applyEnvOverrides(cfg *Config) {
 	}
 	if v := os.Getenv("SEO_CRAWLER_PSI_API_KEY"); v != "" {
 		cfg.PSIAPIKey = v
+	}
+	if v := os.Getenv("SEO_CRAWLER_LANGUAGETOOL_URL"); v != "" {
+		cfg.LanguageToolURL = v
+	}
+	if v := os.Getenv("SEO_CRAWLER_PSI_DESKTOP"); v != "" {
+		cfg.PSIDesktop = parseBool(v)
 	}
 }
 

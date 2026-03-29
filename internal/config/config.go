@@ -202,7 +202,5 @@ func DefaultConfig() Config {
 
 		URLGroups: []URLGroupConfig{},
 
-		PSIDesktop:      true,
-		LanguageToolURL: "http://localhost:8010",
 	}
 }
