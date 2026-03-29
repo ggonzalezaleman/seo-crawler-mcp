@@ -509,6 +509,11 @@ loop:
 		}
 	}
 
+	// --- Post-crawl: browser re-render all pages to capture lazy-loaded content ---
+	if completionErr == nil && e.config.RenderMode != config.RenderModeStatic && renderer.IsPlaywrightAvailable() {
+		e.browserEnrichPages(ctx, jobID)
+	}
+
 	// --- Post-crawl: HEAD-check discovered image assets ---
 	if completionErr == nil {
 		e.headCheckAssets(ctx, jobID)
@@ -1823,6 +1828,80 @@ func jsonStrPtr(v any) *string {
 	}
 	s := string(data)
 	return &s
+}
+
+// browserEnrichPages re-renders all crawled pages with Playwright (full scroll)
+// to capture lazy-loaded content that static fetching misses. Updates word counts,
+// headings, and images when the browser version has more content.
+func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
+	rows, err := e.db.Query(`
+		SELECT p.url_id, u.normalized_url, p.word_count
+		FROM pages p
+		JOIN urls u ON u.id = p.url_id AND u.job_id = p.job_id
+		WHERE p.job_id = ?
+	`, jobID)
+	if err != nil {
+		log.Printf("engine: browser enrich: query failed: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	type pageInfo struct {
+		urlID     int64
+		url       string
+		wordCount int
+	}
+	var pages []pageInfo
+	for rows.Next() {
+		var pi pageInfo
+		if err := rows.Scan(&pi.urlID, &pi.url, &pi.wordCount); err != nil {
+			continue
+		}
+		pages = append(pages, pi)
+	}
+	if len(pages) == 0 {
+		return
+	}
+
+	log.Printf("engine: browser enrich: re-rendering %d pages with full scroll", len(pages))
+	enriched := 0
+
+	for _, pg := range pages {
+		if ctx.Err() != nil {
+			break
+		}
+		pwResult, pwErr := renderer.RenderWithPlaywright(ctx, pg.url)
+		if pwErr != nil {
+			continue
+		}
+		page, parseErr := parser.ParseHTML([]byte(pwResult.HTML), pg.url, http.Header{})
+		if parseErr != nil {
+			continue
+		}
+		if page.ExtractedWordCount <= pg.wordCount {
+			continue // static version already had equal or more content
+		}
+
+		enriched++
+		e.db.Exec(`
+			UPDATE pages SET
+				word_count = ?,
+				main_content_word_count = ?,
+				content_hash = ?,
+				h1_json = ?,
+				h2_json = ?,
+				images_json = ?
+			WHERE job_id = ? AND url_id = ?`,
+			page.ExtractedWordCount, page.MainContentWordCount,
+			page.ContentHash,
+			marshalStringSlice(page.Headings.H1),
+			marshalStringSlice(page.Headings.H2),
+			marshalImages(page.Images),
+			jobID, pg.urlID,
+		)
+	}
+
+	log.Printf("engine: browser enrich: updated %d/%d pages with richer content", enriched, len(pages))
 }
 
 func marshalStringSlice(items []string) string {
