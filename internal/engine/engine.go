@@ -1876,8 +1876,67 @@ func (e *Engine) runTextQualityChecks(ctx context.Context, jobID string) {
 		return
 	}
 
+	// Build custom dictionary from brand names found in titles and H1s
+	customDict := map[string]bool{}
+	dictRows, dictErr := e.db.Query(`
+		SELECT DISTINCT title, h1_json FROM pages WHERE job_id = ?
+	`, jobID)
+	if dictErr == nil {
+		for dictRows.Next() {
+			var title, h1JSON sql.NullString
+			if err := dictRows.Scan(&title, &h1JSON); err != nil {
+				continue
+			}
+			// Extract words from titles
+			if title.Valid {
+				for _, word := range strings.Fields(title.String) {
+					cleaned := strings.Trim(word, ".,;:!?|()-\"'")
+					if len(cleaned) > 2 {
+						customDict[cleaned] = true
+					}
+				}
+			}
+			// Extract words from H1s
+			if h1JSON.Valid {
+				var h1s []string
+				if err := json.Unmarshal([]byte(h1JSON.String), &h1s); err == nil {
+					for _, h1 := range h1s {
+						for _, word := range strings.Fields(h1) {
+							cleaned := strings.Trim(word, ".,;:!?|()-\"'")
+							if len(cleaned) > 2 {
+								customDict[cleaned] = true
+							}
+						}
+					}
+				}
+			}
+		}
+		dictRows.Close()
+	}
+	// Also add the seed domain as a brand word
+	job, jobErr := e.db.GetJob(jobID)
+	if jobErr == nil {
+		var seeds []string
+		if err := json.Unmarshal([]byte(job.SeedURLs), &seeds); err == nil {
+			for _, seed := range seeds {
+				if parsed, err := url.Parse(seed); err == nil {
+					host := parsed.Hostname()
+					parts := strings.Split(host, ".")
+					for _, part := range parts {
+						if len(part) > 2 && part != "www" && part != "com" && part != "org" && part != "net" && part != "io" && part != "ai" {
+							customDict[part] = true
+							customDict[strings.Title(part)] = true
+						}
+					}
+				}
+			}
+		}
+	}
+	log.Printf("engine: text quality custom dictionary: %d words", len(customDict))
+
 	log.Printf("engine: running text quality checks on %d pages via LanguageTool", len(pages))
 	totalFindings := 0
+	checkOpts := textquality.CheckOptions{CustomDict: customDict}
 
 	for _, pg := range pages {
 		if ctx.Err() != nil {
@@ -1892,7 +1951,7 @@ func (e *Engine) runTextQualityChecks(ctx context.Context, jobID string) {
 		if parseErr != nil || parsed.ExtractedText == "" {
 			continue
 		}
-		result, err := client.Check(ctx, parsed.ExtractedText, "en-US")
+		result, err := client.Check(ctx, parsed.ExtractedText, "en-US", checkOpts)
 		if err != nil {
 			log.Printf("engine: text quality check failed for %s: %v", pg.url, err)
 			continue

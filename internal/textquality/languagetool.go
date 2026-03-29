@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -80,11 +81,22 @@ type ltResponse struct {
 	} `json:"matches"`
 }
 
+// CheckOptions holds optional parameters for Check.
+type CheckOptions struct {
+	// CustomDict is a set of words to ignore (brand names, product names, etc.)
+	CustomDict map[string]bool
+}
+
 // Check sends text to LanguageTool and returns findings.
 // Language should be a BCP-47 code like "en-US" or "auto" for detection.
-func (c *LTClient) Check(ctx context.Context, text, language string) (*CheckResult, error) {
+func (c *LTClient) Check(ctx context.Context, text, language string, opts ...CheckOptions) (*CheckResult, error) {
 	if text == "" {
 		return &CheckResult{}, nil
+	}
+
+	var opt CheckOptions
+	if len(opts) > 0 {
+		opt = opts[0]
 	}
 
 	// Truncate very long texts to avoid overwhelming the server
@@ -128,6 +140,14 @@ func (c *LTClient) Check(ctx context.Context, text, language string) (*CheckResu
 	}
 
 	for _, m := range raw.Matches {
+		// Skip matches where the flagged word is in the custom dictionary
+		if len(opt.CustomDict) > 0 && m.Length > 0 && m.Offset >= 0 && m.Offset+m.Length <= len(text) {
+			flaggedWord := text[m.Offset : m.Offset+m.Length]
+			if opt.CustomDict[flaggedWord] || opt.CustomDict[strings.ToLower(flaggedWord)] || opt.CustomDict[strings.ToUpper(flaggedWord)] {
+				continue
+			}
+		}
+
 		replacements := make([]string, 0, min(5, len(m.Replacements)))
 		for i, r := range m.Replacements {
 			if i >= 5 {
