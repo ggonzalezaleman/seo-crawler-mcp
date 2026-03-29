@@ -1830,16 +1830,17 @@ func jsonStrPtr(v any) *string {
 	return &s
 }
 
-// browserEnrichPages re-renders all crawled pages with Playwright (full scroll)
-// to capture lazy-loaded content that static fetching misses. Updates word counts,
-// headings, and images when the browser version has more content.
+// browserEnrichPages re-renders pages with Playwright (full scroll) to capture
+// lazy-loaded content. Only targets pages that look incomplete: JS-suspect,
+// thin content, or built with known JS frameworks.
 func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
 	rows, err := e.db.Query(`
-		SELECT p.url_id, u.normalized_url, p.word_count
+		SELECT p.url_id, u.normalized_url, p.word_count, p.js_suspect
 		FROM pages p
 		JOIN urls u ON u.id = p.url_id AND u.job_id = p.job_id
 		WHERE p.job_id = ?
-	`, jobID)
+		  AND (p.js_suspect = 1 OR p.word_count < ? OR p.word_count IS NULL)
+	`, jobID, e.config.ThinContentThreshold*3)
 	if err != nil {
 		log.Printf("engine: browser enrich: query failed: %v", err)
 		return
@@ -1850,13 +1851,16 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
 		urlID     int64
 		url       string
 		wordCount int
+		jsSuspect bool
 	}
 	var pages []pageInfo
 	for rows.Next() {
 		var pi pageInfo
-		if err := rows.Scan(&pi.urlID, &pi.url, &pi.wordCount); err != nil {
+		var jsSuspect int
+		if err := rows.Scan(&pi.urlID, &pi.url, &pi.wordCount, &jsSuspect); err != nil {
 			continue
 		}
+		pi.jsSuspect = jsSuspect == 1
 		pages = append(pages, pi)
 	}
 	if len(pages) == 0 {

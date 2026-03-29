@@ -194,12 +194,21 @@ with sync_playwright() as p:
     all_found.update(final_links)
 
     # Scroll the full page to trigger lazy-loaded content (intersection observers)
+    # Caps: max 20,000px height, max 15 seconds, stop if height stabilizes
+    import time as _time
+    _scroll_start = _time.time()
+    _max_scroll_height = 20000
+    _max_scroll_seconds = 15
     prev_height = 0
     for _ in range(60):
+        if _time.time() - _scroll_start > _max_scroll_seconds:
+            break
         page.evaluate("window.scrollBy(0, 800)")
         page.wait_for_timeout(200)
         curr_height = page.evaluate("document.body.scrollHeight")
         if curr_height == prev_height:
+            break
+        if curr_height > _max_scroll_height:
             break
         prev_height = curr_height
     page.evaluate("window.scrollTo(0, 0)")
