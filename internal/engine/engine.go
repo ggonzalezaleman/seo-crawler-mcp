@@ -1964,12 +1964,16 @@ func (e *Engine) runTextQualityChecks(ctx context.Context, jobID string) {
 
 		// Filter out noisy rules that produce false positives from HTML-extracted text
 		noisyRules := map[string]bool{
-			"WHITESPACE_RULE":              true,
-			"CONSECUTIVE_SPACES":           true,
-			"COMMA_PARENTHESIS_WHITESPACE": true,
-			"SENTENCE_WHITESPACE":          true,
-			"EN_UNPAIRED_BRACKETS":         true,
-			"UPPERCASE_SENTENCE_START":     true,
+			"WHITESPACE_RULE":                      true,
+			"CONSECUTIVE_SPACES":                   true,
+			"COMMA_PARENTHESIS_WHITESPACE":         true,
+			"SENTENCE_WHITESPACE":                  true,
+			"EN_UNPAIRED_BRACKETS":                 true,
+			"UPPERCASE_SENTENCE_START":             true,
+			"ENGLISH_WORD_REPEAT_RULE":             true, // false positives from adjacent HTML components
+			"ENGLISH_WORD_REPEAT_BEGINNING_RULE":   true,
+			"WORD_REPEAT_RULE":                     true,
+			"PHRASE_REPETITION":                    true,
 		}
 
 		// Group by category for cleaner issue creation
