@@ -106,6 +106,9 @@ type Config struct {
 	// MaxJobAge is the maximum age of completed jobs before purge. 0 means disabled.
 	MaxJobAge        time.Duration `json:"maxJobAge"`
 
+	// PageSpeed Insights API key (empty = skip PSI audits)
+	PSIAPIKey string `json:"psiApiKey"`
+
 	// URL group overrides
 	URLGroups []URLGroupConfig `json:"urlGroups"`
 }

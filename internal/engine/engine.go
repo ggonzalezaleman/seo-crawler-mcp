@@ -21,6 +21,7 @@ import (
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/fetcher"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/frontier"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/issues"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/lighthouse"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/materialize"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/parser"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/renderer"
@@ -511,6 +512,16 @@ loop:
 	// --- Post-crawl: HEAD-check discovered image assets ---
 	if completionErr == nil {
 		e.headCheckAssets(ctx, jobID)
+	}
+
+	// --- Post-crawl: Performance audits (PageSpeed Insights) ---
+	if completionErr == nil && e.config.PSIAPIKey != "" {
+		e.runLighthouseAudits(ctx, jobID)
+	}
+
+	// --- Post-crawl: Accessibility audits (Axe-core via Playwright) ---
+	if completionErr == nil && renderer.IsPlaywrightAvailable() {
+		e.runAxeAudits(ctx, jobID)
 	}
 
 	// --- Post-crawl: recalculate inbound/outbound edge counts on pages ---
@@ -1605,6 +1616,111 @@ func txInsertPage(ctx context.Context, tx *sql.Tx, jobID string, urlID, fetchID 
 		contentHash, jsSuspect,
 	)
 	return err
+}
+
+// runLighthouseAudits runs PageSpeed Insights API for all crawled pages.
+// Results are stored as crawl events with type "psi_audit".
+func (e *Engine) runLighthouseAudits(ctx context.Context, jobID string) {
+	rows, err := e.db.Query(
+		`SELECT u.normalized_url FROM pages p JOIN urls u ON u.id = p.url_id WHERE p.job_id = ? LIMIT 50`,
+		jobID,
+	)
+	if err != nil {
+		log.Printf("engine: PSI audit query failed: %v", err)
+		return
+	}
+	var urls []string
+	for rows.Next() {
+		var u string
+		if scanErr := rows.Scan(&u); scanErr == nil {
+			urls = append(urls, u)
+		}
+	}
+	rows.Close()
+
+	if len(urls) == 0 {
+		return
+	}
+
+	log.Printf("engine: running PSI audits on %d pages", len(urls))
+	audited := 0
+
+	for _, pageURL := range urls {
+		if ctx.Err() != nil {
+			break
+		}
+
+		for _, strategy := range []string{"mobile", "desktop"} {
+			result, psiErr := lighthouse.FetchPSI(ctx, pageURL, e.config.PSIAPIKey, strategy)
+			if psiErr != nil {
+				log.Printf("engine: PSI audit failed for %s (%s): %v", pageURL, strategy, psiErr)
+				continue
+			}
+
+			detailsBytes, _ := json.Marshal(result)
+			details := string(detailsBytes)
+			urlStr := pageURL
+			e.db.InsertEvent(jobID, "psi_audit", &details, &urlStr)
+			audited++
+		}
+
+		// Rate limit: 1 URL per 2 seconds to stay within PSI API limits
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
+
+	log.Printf("engine: completed PSI audits (%d results)", audited)
+}
+
+// runAxeAudits runs axe-core accessibility audits on all crawled pages.
+// Results are stored as crawl events with type "axe_audit".
+func (e *Engine) runAxeAudits(ctx context.Context, jobID string) {
+	rows, err := e.db.Query(
+		`SELECT u.normalized_url FROM pages p JOIN urls u ON u.id = p.url_id WHERE p.job_id = ? LIMIT 50`,
+		jobID,
+	)
+	if err != nil {
+		log.Printf("engine: Axe audit query failed: %v", err)
+		return
+	}
+	var urls []string
+	for rows.Next() {
+		var u string
+		if scanErr := rows.Scan(&u); scanErr == nil {
+			urls = append(urls, u)
+		}
+	}
+	rows.Close()
+
+	if len(urls) == 0 {
+		return
+	}
+
+	log.Printf("engine: running Axe accessibility audits on %d pages", len(urls))
+	audited := 0
+
+	for _, pageURL := range urls {
+		if ctx.Err() != nil {
+			break
+		}
+
+		result, axeErr := renderer.RunAxeAudit(ctx, pageURL)
+		if axeErr != nil {
+			log.Printf("engine: Axe audit failed for %s: %v", pageURL, axeErr)
+			continue
+		}
+
+		detailsBytes, _ := json.Marshal(result)
+		details := string(detailsBytes)
+		urlStr := pageURL
+		e.db.InsertEvent(jobID, "axe_audit", &details, &urlStr)
+		audited++
+	}
+
+	log.Printf("engine: completed Axe accessibility audits (%d results)", audited)
 }
 
 // failJob marks a job as failed with the given error.

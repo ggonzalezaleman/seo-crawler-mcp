@@ -61,6 +61,7 @@ type tomlConfig struct {
 	MaxQueueMemoryMB int    `toml:"max_queue_memory_mb"`
 	DBPath           string `toml:"db_path"`
 	MaxJobAge        string `toml:"max_job_age"`
+	PSIAPIKey        string `toml:"psi_api_key"`
 }
 
 // LoadConfig loads configuration with precedence: env vars > config file > defaults.
@@ -218,6 +219,9 @@ func LoadFromFile(path string) (*Config, error) {
 			return nil, fmt.Errorf("parsing max_job_age %q: %w", tc.MaxJobAge, err)
 		}
 		cfg.MaxJobAge = d
+	}
+	if tc.PSIAPIKey != "" {
+		cfg.PSIAPIKey = tc.PSIAPIKey
 	}
 
 	return &cfg, nil
@@ -384,6 +388,9 @@ func applyEnvOverrides(cfg *Config) {
 		if d, err := time.ParseDuration(v); err == nil {
 			cfg.MaxJobAge = d
 		}
+	}
+	if v := os.Getenv("SEO_CRAWLER_PSI_API_KEY"); v != "" {
+		cfg.PSIAPIKey = v
 	}
 }
 
