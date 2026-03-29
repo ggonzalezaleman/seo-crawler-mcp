@@ -146,6 +146,19 @@ func (c *LTClient) Check(ctx context.Context, text, language string, opts ...Che
 			if opt.CustomDict[flaggedWord] || opt.CustomDict[strings.ToLower(flaggedWord)] || opt.CustomDict[strings.ToUpper(flaggedWord)] {
 				continue
 			}
+			// Also skip if any replacement is just the flagged word with spaces inserted
+			// (e.g. "Litebox" → "Lite box" or "MotherDuck" → "Mother Duck")
+			skip := false
+			for _, rep := range m.Replacements {
+				normalized := strings.ReplaceAll(rep.Value, " ", "")
+				if strings.EqualFold(normalized, flaggedWord) {
+					skip = true
+					break
+				}
+			}
+			if skip {
+				continue
+			}
 		}
 
 		replacements := make([]string, 0, min(5, len(m.Replacements)))
