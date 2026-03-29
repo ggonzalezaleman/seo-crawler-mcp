@@ -140,22 +140,40 @@ func (c *LTClient) Check(ctx context.Context, text, language string, opts ...Che
 	}
 
 	for _, m := range raw.Matches {
-		// Skip matches where the flagged word is in the custom dictionary
-		if len(opt.CustomDict) > 0 && m.Length > 0 && m.Offset >= 0 && m.Offset+m.Length <= len(text) {
-			flaggedWord := text[m.Offset : m.Offset+m.Length]
-			if opt.CustomDict[flaggedWord] || opt.CustomDict[strings.ToLower(flaggedWord)] || opt.CustomDict[strings.ToUpper(flaggedWord)] {
-				continue
-			}
-			// Also skip if any replacement is just the flagged word with spaces inserted
-			// (e.g. "Litebox" → "Lite box" or "MotherDuck" → "Mother Duck")
+		// Skip matches where the flagged word or its replacements match the custom dictionary
+		if len(opt.CustomDict) > 0 {
 			skip := false
-			for _, rep := range m.Replacements {
-				normalized := strings.ReplaceAll(rep.Value, " ", "")
-				if strings.EqualFold(normalized, flaggedWord) {
+
+			// Check the flagged word directly from text
+			if m.Length > 0 && m.Offset >= 0 && m.Offset+m.Length <= len(text) {
+				flaggedWord := text[m.Offset : m.Offset+m.Length]
+				if opt.CustomDict[flaggedWord] || opt.CustomDict[strings.ToLower(flaggedWord)] || opt.CustomDict[strings.ToUpper(flaggedWord)] {
 					skip = true
-					break
+				}
+
+				// Skip if any replacement is just the flagged word with spaces inserted
+				if !skip {
+					for _, rep := range m.Replacements {
+						normalized := strings.ReplaceAll(rep.Value, " ", "")
+						if strings.EqualFold(normalized, flaggedWord) {
+							skip = true
+							break
+						}
+					}
 				}
 			}
+
+			// Also check: if any replacement, when spaces removed, matches a dict word
+			if !skip {
+				for _, rep := range m.Replacements {
+					noSpaces := strings.ReplaceAll(rep.Value, " ", "")
+					if opt.CustomDict[noSpaces] || opt.CustomDict[strings.ToLower(noSpaces)] {
+						skip = true
+						break
+					}
+				}
+			}
+
 			if skip {
 				continue
 			}
