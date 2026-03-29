@@ -14,7 +14,7 @@ import (
 type AxeResult struct {
 	URL        string     `json:"url"`
 	Violations []AxeIssue `json:"violations"`
-	Passes     int        `json:"passes"`
+	Passes     []AxeIssue `json:"passes"`
 	Incomplete int        `json:"incomplete"`
 }
 
@@ -123,17 +123,18 @@ with sync_playwright() as p:
                             values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'best-practice']
                         }
                     }).then(results => {
+                        const mapIssue = v => ({
+                            id: v.id,
+                            impact: v.impact || '',
+                            description: v.description,
+                            help: v.help,
+                            helpUrl: v.helpUrl,
+                            tags: v.tags,
+                            nodes: v.nodes.length
+                        });
                         resolve({
-                            violations: results.violations.map(v => ({
-                                id: v.id,
-                                impact: v.impact,
-                                description: v.description,
-                                help: v.help,
-                                helpUrl: v.helpUrl,
-                                tags: v.tags,
-                                nodes: v.nodes.length
-                            })),
-                            passes: results.passes.length,
+                            violations: results.violations.map(mapIssue),
+                            passes: results.passes.map(mapIssue),
                             incomplete: results.incomplete.length
                         });
                     }).catch(reject);
@@ -153,7 +154,7 @@ with sync_playwright() as p:
             results.append({
                 "url": url,
                 "violations": [],
-                "passes": 0,
+                "passes": [],
                 "incomplete": 0
             })
             try:
