@@ -132,6 +132,7 @@ type ParseResult struct {
 	HeadTagCount              int      // number of <head> elements
 	BodyTagCount              int      // number of <body> elements
 	ExtractedText             string   // visible text content (for content checks like lorem ipsum)
+	ExtractedTextWithBounds   string   // visible text with block-boundary markers for cross-component detection
 }
 
 // ParseHTML extracts SEO metadata from raw HTML bytes.
@@ -451,6 +452,7 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 	allText := ExtractVisibleText(doc)
 	r.ExtractedWordCount = CountWords(allText)
 	r.ExtractedText = allText
+	r.ExtractedTextWithBounds = ExtractVisibleTextWithBoundaries(doc)
 
 	mainText := ExtractMainContentText(doc)
 	r.MainContentWordCount = CountWords(mainText)

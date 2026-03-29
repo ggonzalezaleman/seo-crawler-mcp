@@ -1964,22 +1964,51 @@ func (e *Engine) runTextQualityChecks(ctx context.Context, jobID string) {
 
 		// Filter out noisy rules that produce false positives from HTML-extracted text
 		noisyRules := map[string]bool{
-			"WHITESPACE_RULE":                      true,
-			"CONSECUTIVE_SPACES":                   true,
-			"COMMA_PARENTHESIS_WHITESPACE":         true,
-			"SENTENCE_WHITESPACE":                  true,
-			"EN_UNPAIRED_BRACKETS":                 true,
-			"UPPERCASE_SENTENCE_START":             true,
-			"ENGLISH_WORD_REPEAT_RULE":             true, // false positives from adjacent HTML components
-			"ENGLISH_WORD_REPEAT_BEGINNING_RULE":   true,
-			"WORD_REPEAT_RULE":                     true,
-			"PHRASE_REPETITION":                    true,
+			"WHITESPACE_RULE":              true,
+			"CONSECUTIVE_SPACES":           true,
+			"COMMA_PARENTHESIS_WHITESPACE": true,
+			"SENTENCE_WHITESPACE":          true,
+			"EN_UNPAIRED_BRACKETS":         true,
+			"UPPERCASE_SENTENCE_START":     true,
 		}
+
+		// Word repeat rules: only filter if the repeat spans a block boundary
+		wordRepeatRules := map[string]bool{
+			"ENGLISH_WORD_REPEAT_RULE":           true,
+			"ENGLISH_WORD_REPEAT_BEGINNING_RULE": true,
+			"WORD_REPEAT_RULE":                   true,
+			"PHRASE_REPETITION":                  true,
+		}
+
+		// Use boundary-marked text to detect cross-component repeats
+		boundaryText := parsed.ExtractedTextWithBounds
 
 		// Group by category for cleaner issue creation
 		for _, match := range result.Matches {
 			if noisyRules[match.RuleID] {
 				continue
+			}
+
+			// For word repeat rules, check if the repeat spans a block boundary
+			if wordRepeatRules[match.RuleID] && len(boundaryText) > 0 {
+				// Find the approximate region in the boundary text
+				// The boundary text has extra separator chars, so offsets don't align exactly.
+				// Instead, check if the flagged sentence context contains a block boundary.
+				if match.Offset >= 0 && match.Length > 0 {
+					// Search for the repeated word in boundary text near the offset
+					end := match.Offset + match.Length
+					if end > len(boundaryText) {
+						end = len(boundaryText)
+					}
+					start := match.Offset - 20
+					if start < 0 {
+						start = 0
+					}
+					window := boundaryText[start:min(end+20, len(boundaryText))]
+					if strings.Contains(window, parser.BlockSeparator) {
+						continue // repeat spans different HTML blocks — false positive
+					}
+				}
 			}
 			detailsJSON, _ := json.Marshal(map[string]interface{}{
 				"message":      match.Message,
