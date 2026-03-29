@@ -2254,6 +2254,35 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
 			marshalImages(page.Images),
 			jobID, pg.urlID,
 		)
+
+		// Register newly discovered images as assets + asset_references
+		// so they get HEAD-checked in the next phase
+		for _, img := range page.Images {
+			if img.Src == "" {
+				continue
+			}
+			parsed, parseErr := url.Parse(img.Src)
+			if parseErr != nil {
+				continue
+			}
+			imgHost := parsed.Hostname()
+			imgURLID, upsertErr := e.db.UpsertURL(jobID, img.Src, imgHost, "discovered", false, "asset")
+			if upsertErr != nil {
+				continue
+			}
+			// Insert asset (ignore if already exists)
+			e.db.Exec(`
+				INSERT OR IGNORE INTO assets (job_id, url_id)
+				VALUES (?, ?)`,
+				jobID, imgURLID,
+			)
+			// Insert asset_reference (ignore if already exists)
+			e.db.Exec(`
+				INSERT OR IGNORE INTO asset_references (job_id, asset_url_id, source_page_url_id, reference_type)
+				VALUES (?, ?, ?, 'img_src')`,
+				jobID, imgURLID, pg.urlID,
+			)
+		}
 	}
 
 	log.Printf("engine: browser enrich: updated %d/%d pages with richer content", enriched, len(pages))
