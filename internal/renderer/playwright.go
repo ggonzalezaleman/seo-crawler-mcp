@@ -61,6 +61,68 @@ func RenderWithPlaywright(ctx context.Context, pageURL string) (*PlaywrightResul
 	return &result, nil
 }
 
+// RenderPageContentOnly uses Playwright to render a page with full scroll
+// but WITHOUT menu discovery clicks. This preserves the page's own content
+// for accurate word count and image extraction.
+func RenderPageContentOnly(ctx context.Context, pageURL string) (*PlaywrightResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+
+	script := `
+import sys, json
+from playwright.sync_api import sync_playwright
+import time as _time
+
+url = sys.argv[1]
+result = {"html": "", "links": []}
+
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=True)
+    page = browser.new_page(viewport={"width": 1440, "height": 900})
+    page.goto(url, wait_until="networkidle", timeout=30000)
+    page.wait_for_timeout(2000)
+
+    # Full scroll to trigger lazy loading
+    _scroll_start = _time.time()
+    prev_height = 0
+    for _ in range(60):
+        if _time.time() - _scroll_start > 15:
+            break
+        page.evaluate("window.scrollBy(0, 800)")
+        page.wait_for_timeout(200)
+        curr_height = page.evaluate("document.body.scrollHeight")
+        if curr_height == prev_height:
+            break
+        if curr_height > 20000:
+            break
+        prev_height = curr_height
+    page.evaluate("window.scrollTo(0, 0)")
+    page.wait_for_timeout(500)
+
+    result["html"] = page.content()
+    result["links"] = page.evaluate("() => [...document.querySelectorAll('a[href]')].map(a => a.href)")
+    browser.close()
+
+print(json.dumps(result))
+`
+
+	cmd := exec.CommandContext(ctx, "python3", "-c", script, pageURL)
+	output, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			return nil, fmt.Errorf("playwright content render failed: %w; stderr: %s", err, string(exitErr.Stderr))
+		}
+		return nil, fmt.Errorf("playwright content render failed: %w", err)
+	}
+
+	var result PlaywrightResult
+	if err := json.Unmarshal(output, &result); err != nil {
+		return nil, fmt.Errorf("playwright content output parse failed: %w", err)
+	}
+
+	return &result, nil
+}
+
 func playwrightScript() string {
 	return `
 import sys, json

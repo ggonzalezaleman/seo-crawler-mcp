@@ -2225,7 +2225,8 @@ func (e *Engine) browserEnrichPages(ctx context.Context, jobID string) {
 		if ctx.Err() != nil {
 			break
 		}
-		pwResult, pwErr := renderer.RenderWithPlaywright(ctx, pg.url)
+		// Use content-only render (no menu clicks) to preserve page's own content
+		pwResult, pwErr := renderer.RenderPageContentOnly(ctx, pg.url)
 		if pwErr != nil {
 			continue
 		}
