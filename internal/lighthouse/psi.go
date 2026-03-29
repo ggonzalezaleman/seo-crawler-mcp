@@ -81,13 +81,21 @@ func ParsePSIResponse(raw map[string]interface{}, pageURL, strategy string) *PSI
 	}
 
 	result.Audits = make(map[string]Audit)
-	for _, key := range keyAudits {
-		if a, ok := audits[key].(map[string]interface{}); ok {
-			audit := Audit{ID: key}
-			audit.Title, _ = a["title"].(string)
-			audit.Description, _ = a["description"].(string)
-			audit.Score, _ = a["score"].(float64)
-			audit.DisplayValue, _ = a["displayValue"].(string)
+	// Persist ALL audits returned by PSI, not just a hardcoded subset.
+	// This ensures accessibility, SEO, and best-practices audits are available
+	// alongside performance audits.
+	for key, raw := range audits {
+		a, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		audit := Audit{ID: key}
+		audit.Title, _ = a["title"].(string)
+		audit.Description, _ = a["description"].(string)
+		audit.Score, _ = a["score"].(float64)
+		audit.DisplayValue, _ = a["displayValue"].(string)
+		// Only include audits that have meaningful content (title or score)
+		if audit.Title != "" || audit.Score > 0 {
 			result.Audits[key] = audit
 		}
 	}
