@@ -197,5 +197,7 @@ func DefaultConfig() Config {
 		MaxJobAge:        0,
 
 		URLGroups: []URLGroupConfig{},
+
+		PSIDesktop: true,
 	}
 }
