@@ -541,6 +541,11 @@ loop:
 		auditWg.Wait()
 	}
 
+	// --- Post-crawl: markdown content negotiation check ---
+	if completionErr == nil {
+		e.checkMarkdownNegotiation(ctx, jobID)
+	}
+
 	// --- Post-crawl: text quality checks via LanguageTool ---
 	if completionErr == nil && e.config.LanguageToolURL != "" {
 		e.runTextQualityChecks(ctx, jobID)
@@ -1834,6 +1839,112 @@ func jsonStrPtr(v any) *string {
 	}
 	s := string(data)
 	return &s
+}
+
+// checkMarkdownNegotiation tests if crawled pages support Accept: text/markdown
+// content negotiation (agent-friendly sites). Creates events with results.
+func (e *Engine) checkMarkdownNegotiation(ctx context.Context, jobID string) {
+	rows, err := e.db.Query(`
+		SELECT u.normalized_url
+		FROM pages p
+		JOIN urls u ON u.id = p.url_id AND u.job_id = p.job_id
+		WHERE p.job_id = ?
+	`, jobID)
+	if err != nil {
+		log.Printf("engine: markdown negotiation query failed: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	var urls []string
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err == nil {
+			urls = append(urls, u)
+		}
+	}
+	if len(urls) == 0 {
+		return
+	}
+
+	log.Printf("engine: checking markdown content negotiation on %d pages", len(urls))
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	supported := 0
+	total := 0
+
+	type mdResult struct {
+		URL           string `json:"url"`
+		Supports      bool   `json:"supportsMarkdown"`
+		ContentType   string `json:"contentType"`
+		ContentLength int64  `json:"contentLength"`
+	}
+	var results []mdResult
+
+	for _, pageURL := range urls {
+		if ctx.Err() != nil {
+			break
+		}
+		total++
+
+		req, err := http.NewRequestWithContext(ctx, "GET", pageURL, nil)
+		if err != nil {
+			results = append(results, mdResult{URL: pageURL})
+			continue
+		}
+		req.Header.Set("Accept", "text/markdown")
+		req.Header.Set("User-Agent", e.config.UserAgent)
+
+		resp, err := client.Do(req)
+		if err != nil {
+			results = append(results, mdResult{URL: pageURL})
+			continue
+		}
+		ct := resp.Header.Get("Content-Type")
+		cl := resp.ContentLength
+		resp.Body.Close()
+
+		supports := strings.Contains(strings.ToLower(ct), "text/markdown")
+		if supports {
+			supported++
+		}
+		results = append(results, mdResult{
+			URL:           pageURL,
+			Supports:      supports,
+			ContentType:   ct,
+			ContentLength: cl,
+		})
+	}
+
+	// Store as a crawl event
+	detailsJSON, _ := json.Marshal(map[string]interface{}{
+		"totalChecked":   total,
+		"supported":      supported,
+		"unsupported":    total - supported,
+		"pages":          results,
+	})
+	details := string(detailsJSON)
+	e.db.InsertEvent(jobID, "markdown_negotiation", &details, nil)
+
+	// Create issues for pages that DO support it (positive finding)
+	for _, r := range results {
+		if r.Supports {
+			d, _ := json.Marshal(map[string]interface{}{
+				"url":         r.URL,
+				"contentType": r.ContentType,
+			})
+			ds := string(d)
+			e.db.InsertIssue(storage.IssueInput{
+				JobID:       jobID,
+				IssueType:   "supports_markdown_negotiation",
+				Severity:    "info",
+				Scope:       "page_local",
+				DetailsJSON: &ds,
+			})
+		}
+	}
+
+	log.Printf("engine: markdown negotiation: %d/%d pages support Accept: text/markdown", supported, total)
 }
 
 // runTextQualityChecks runs LanguageTool on all crawled pages and creates
