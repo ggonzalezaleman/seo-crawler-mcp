@@ -1677,7 +1677,7 @@ func (e *Engine) runLighthouseAudits(ctx context.Context, jobID string) {
 	close(work)
 
 	// Rate limiter: 1 call per 500ms across all workers (PSI allows 25K/day)
-	rateTicker := time.NewTicker(500 * time.Millisecond)
+	rateTicker := time.NewTicker(1500 * time.Millisecond)
 	defer rateTicker.Stop()
 	rateCh := make(chan struct{})
 	go func() {
@@ -1690,7 +1690,7 @@ func (e *Engine) runLighthouseAudits(ctx context.Context, jobID string) {
 	var mu sync.Mutex
 	var audited int
 
-	const psiWorkers = 4
+	const psiWorkers = 2
 	var wg sync.WaitGroup
 	for range psiWorkers {
 		wg.Add(1)
