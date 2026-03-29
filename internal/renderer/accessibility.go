@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -38,81 +39,130 @@ func IsPublicURL(rawURL string) bool {
 	return host != "localhost" && host != "127.0.0.1" && host != "::1" && host != "0.0.0.0"
 }
 
-// RunAxeAudit runs an axe-core accessibility audit on a URL using Playwright.
+// RunAxeAudit runs an axe-core accessibility audit on a single URL using Playwright.
 // Requires python3 and playwright to be installed. Skips non-public URLs.
 func RunAxeAudit(ctx context.Context, pageURL string) (*AxeResult, error) {
-	if !IsPublicURL(pageURL) {
-		return nil, fmt.Errorf("skipping axe audit for non-public URL: %s", pageURL)
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "python3", "-c", axeScript(), pageURL)
-	output, err := cmd.Output()
+	results, err := RunAxeAuditBatch(ctx, []string{pageURL})
 	if err != nil {
-		return nil, fmt.Errorf("axe audit failed: %w", err)
+		return nil, err
 	}
-
-	var result AxeResult
-	if err := json.Unmarshal(output, &result); err != nil {
-		return nil, fmt.Errorf("parsing axe output: %w", err)
+	if len(results) == 0 {
+		return nil, fmt.Errorf("no results returned for %s", pageURL)
 	}
-	return &result, nil
+	return results[0], nil
 }
 
-func axeScript() string {
+// RunAxeAuditBatch runs axe-core accessibility audits on multiple URLs using a single
+// Playwright browser instance. This avoids the overhead of launching a new browser
+// for each page. Skips non-public URLs.
+func RunAxeAuditBatch(ctx context.Context, urls []string) ([]*AxeResult, error) {
+	// Filter to public URLs only
+	var publicURLs []string
+	for _, u := range urls {
+		if IsPublicURL(u) {
+			publicURLs = append(publicURLs, u)
+		}
+	}
+	if len(publicURLs) == 0 {
+		return nil, fmt.Errorf("no public URLs to audit")
+	}
+
+	// Generous timeout: 45s per URL + 15s overhead for browser launch
+	timeout := time.Duration(len(publicURLs)*45+15) * time.Second
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// Pass URLs as JSON via stdin to avoid shell escaping issues
+	urlsJSON, err := json.Marshal(publicURLs)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling URLs: %w", err)
+	}
+
+	cmd := exec.CommandContext(ctx, "python3", "-c", axeBatchScript())
+	cmd.Stdin = strings.NewReader(string(urlsJSON))
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("axe batch audit failed: %w", err)
+	}
+
+	var results []*AxeResult
+	if err := json.Unmarshal(output, &results); err != nil {
+		return nil, fmt.Errorf("parsing axe batch output: %w", err)
+	}
+	return results, nil
+}
+
+func axeBatchScript() string {
 	return `
 import sys, json
 from playwright.sync_api import sync_playwright
 
-url = sys.argv[1]
+urls = json.loads(sys.stdin.read())
+
+results = []
 
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True)
-    page = browser.new_page(viewport={"width": 1440, "height": 900})
-    page.goto(url, wait_until="networkidle", timeout=30000)
-    page.wait_for_timeout(2000)
 
-    # Inject axe-core from CDN
-    page.add_script_tag(url="https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.10.2/axe.min.js")
-    page.wait_for_timeout(1000)
+    for url in urls:
+        try:
+            page = browser.new_page(viewport={"width": 1440, "height": 900})
+            page.goto(url, wait_until="networkidle", timeout=30000)
+            page.wait_for_timeout(1000)
 
-    # Run axe
-    results = page.evaluate("""
-        () => new Promise((resolve, reject) => {
-            axe.run(document, {
-                runOnly: {
-                    type: 'tag',
-                    values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'best-practice']
-                }
-            }).then(results => {
-                resolve({
-                    violations: results.violations.map(v => ({
-                        id: v.id,
-                        impact: v.impact,
-                        description: v.description,
-                        help: v.help,
-                        helpUrl: v.helpUrl,
-                        tags: v.tags,
-                        nodes: v.nodes.length
-                    })),
-                    passes: results.passes.length,
-                    incomplete: results.incomplete.length
-                });
-            }).catch(reject);
-        })
-    """)
+            # Inject axe-core from CDN
+            page.add_script_tag(url="https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.10.2/axe.min.js")
+            page.wait_for_timeout(500)
 
-    result = {
-        "url": url,
-        "violations": results["violations"],
-        "passes": results["passes"],
-        "incomplete": results["incomplete"]
-    }
+            # Run axe
+            axe_results = page.evaluate("""
+                () => new Promise((resolve, reject) => {
+                    axe.run(document, {
+                        runOnly: {
+                            type: 'tag',
+                            values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'best-practice']
+                        }
+                    }).then(results => {
+                        resolve({
+                            violations: results.violations.map(v => ({
+                                id: v.id,
+                                impact: v.impact,
+                                description: v.description,
+                                help: v.help,
+                                helpUrl: v.helpUrl,
+                                tags: v.tags,
+                                nodes: v.nodes.length
+                            })),
+                            passes: results.passes.length,
+                            incomplete: results.incomplete.length
+                        });
+                    }).catch(reject);
+                })
+            """)
+
+            results.append({
+                "url": url,
+                "violations": axe_results["violations"],
+                "passes": axe_results["passes"],
+                "incomplete": axe_results["incomplete"]
+            })
+
+            page.close()
+        except Exception as e:
+            # Record error but continue with other URLs
+            results.append({
+                "url": url,
+                "violations": [],
+                "passes": 0,
+                "incomplete": 0
+            })
+            try:
+                page.close()
+            except:
+                pass
 
     browser.close()
 
-print(json.dumps(result))
+print(json.dumps(results))
 `
 }

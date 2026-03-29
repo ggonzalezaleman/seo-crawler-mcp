@@ -109,6 +109,9 @@ type Config struct {
 	// PageSpeed Insights API key (empty = skip PSI audits)
 	PSIAPIKey string `json:"psiApiKey"`
 
+	// PSIDesktop enables desktop strategy in addition to mobile (default: mobile only).
+	PSIDesktop bool `json:"psiDesktop"`
+
 	// URL group overrides
 	URLGroups []URLGroupConfig `json:"urlGroups"`
 }

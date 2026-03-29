@@ -514,14 +514,24 @@ loop:
 		e.headCheckAssets(ctx, jobID)
 	}
 
-	// --- Post-crawl: Performance audits (PageSpeed Insights) ---
-	if completionErr == nil && e.config.PSIAPIKey != "" {
-		e.runLighthouseAudits(ctx, jobID)
-	}
-
-	// --- Post-crawl: Accessibility audits (Axe-core via Playwright) ---
-	if completionErr == nil && renderer.IsPlaywrightAvailable() {
-		e.runAxeAudits(ctx, jobID)
+	// --- Post-crawl: Performance + Accessibility audits (parallel) ---
+	if completionErr == nil {
+		var auditWg sync.WaitGroup
+		if e.config.PSIAPIKey != "" {
+			auditWg.Add(1)
+			go func() {
+				defer auditWg.Done()
+				e.runLighthouseAudits(ctx, jobID)
+			}()
+		}
+		if renderer.IsPlaywrightAvailable() {
+			auditWg.Add(1)
+			go func() {
+				defer auditWg.Done()
+				e.runAxeAudits(ctx, jobID)
+			}()
+		}
+		auditWg.Wait()
 	}
 
 	// --- Post-crawl: recalculate inbound/outbound edge counts on pages ---
@@ -985,7 +995,7 @@ func (e *Engine) sitemapGapEscalation(ctx context.Context, jobID string) int {
 		 FROM urls u
 		 WHERE u.job_id = ? AND u.status = 'fetched' AND u.is_internal = 1
 		 ORDER BY (SELECT COUNT(*) FROM edges e WHERE e.job_id = u.job_id AND e.source_url_id = u.id) DESC
-		 LIMIT 10`,
+		 LIMIT 5`,
 		jobID,
 	)
 	if err != nil {
@@ -1618,7 +1628,8 @@ func txInsertPage(ctx context.Context, tx *sql.Tx, jobID string, urlID, fetchID 
 	return err
 }
 
-// runLighthouseAudits runs PageSpeed Insights API for all crawled pages.
+// runLighthouseAudits runs PageSpeed Insights API for all crawled pages
+// using a worker pool of 4 goroutines for parallel execution.
 // Results are stored as crawl events with type "psi_audit".
 func (e *Engine) runLighthouseAudits(ctx context.Context, jobID string) {
 	rows, err := e.db.Query(
@@ -1642,40 +1653,84 @@ func (e *Engine) runLighthouseAudits(ctx context.Context, jobID string) {
 		return
 	}
 
-	log.Printf("engine: running PSI audits on %d pages", len(urls))
-	audited := 0
+	// Only mobile by default — desktop is optional and halves API calls
+	strategies := []string{"mobile"}
+	if e.config.PSIDesktop {
+		strategies = append(strategies, "desktop")
+	}
 
+	log.Printf("engine: running PSI audits on %d pages (%d strategies, %d total calls)",
+		len(urls), len(strategies), len(urls)*len(strategies))
+
+	// Build work items
+	type psiWork struct {
+		url      string
+		strategy string
+	}
+	work := make(chan psiWork, len(urls)*len(strategies))
 	for _, pageURL := range urls {
-		if ctx.Err() != nil {
-			break
-		}
-
-		for _, strategy := range []string{"mobile", "desktop"} {
-			result, psiErr := lighthouse.FetchPSI(ctx, pageURL, e.config.PSIAPIKey, strategy)
-			if psiErr != nil {
-				log.Printf("engine: PSI audit failed for %s (%s): %v", pageURL, strategy, psiErr)
-				continue
-			}
-
-			detailsBytes, _ := json.Marshal(result)
-			details := string(detailsBytes)
-			urlStr := pageURL
-			e.db.InsertEvent(jobID, "psi_audit", &details, &urlStr)
-			audited++
-		}
-
-		// Rate limit: 1 URL per 2 seconds to stay within PSI API limits
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(2 * time.Second):
+		for _, strategy := range strategies {
+			work <- psiWork{url: pageURL, strategy: strategy}
 		}
 	}
+	close(work)
+
+	// Rate limiter: 1 call per 500ms across all workers (PSI allows 25K/day)
+	rateTicker := time.NewTicker(500 * time.Millisecond)
+	defer rateTicker.Stop()
+	rateCh := make(chan struct{})
+	go func() {
+		defer close(rateCh)
+		for range work {
+			// Pre-seed one token per work item
+		}
+	}()
+
+	var mu sync.Mutex
+	var audited int
+
+	const psiWorkers = 4
+	var wg sync.WaitGroup
+	for range psiWorkers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for item := range work {
+				if ctx.Err() != nil {
+					return
+				}
+
+				// Rate limit: wait for ticker
+				select {
+				case <-ctx.Done():
+					return
+				case <-rateTicker.C:
+				}
+
+				result, psiErr := lighthouse.FetchPSI(ctx, item.url, e.config.PSIAPIKey, item.strategy)
+				if psiErr != nil {
+					log.Printf("engine: PSI audit failed for %s (%s): %v", item.url, item.strategy, psiErr)
+					continue
+				}
+
+				detailsBytes, _ := json.Marshal(result)
+				details := string(detailsBytes)
+				urlStr := item.url
+				e.db.InsertEvent(jobID, "psi_audit", &details, &urlStr)
+
+				mu.Lock()
+				audited++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
 
 	log.Printf("engine: completed PSI audits (%d results)", audited)
 }
 
-// runAxeAudits runs axe-core accessibility audits on all crawled pages.
+// runAxeAudits runs axe-core accessibility audits on all crawled pages
+// using a single Playwright browser instance (batch mode).
 // Results are stored as crawl events with type "axe_audit".
 func (e *Engine) runAxeAudits(ctx context.Context, jobID string) {
 	rows, err := e.db.Query(
@@ -1699,23 +1754,20 @@ func (e *Engine) runAxeAudits(ctx context.Context, jobID string) {
 		return
 	}
 
-	log.Printf("engine: running Axe accessibility audits on %d pages", len(urls))
+	log.Printf("engine: running Axe accessibility audits on %d pages (batch mode)", len(urls))
+
+	// Run all URLs in a single batch — one browser launch for all pages
+	results, batchErr := renderer.RunAxeAuditBatch(ctx, urls)
+	if batchErr != nil {
+		log.Printf("engine: Axe batch audit failed: %v", batchErr)
+		return
+	}
+
 	audited := 0
-
-	for _, pageURL := range urls {
-		if ctx.Err() != nil {
-			break
-		}
-
-		result, axeErr := renderer.RunAxeAudit(ctx, pageURL)
-		if axeErr != nil {
-			log.Printf("engine: Axe audit failed for %s: %v", pageURL, axeErr)
-			continue
-		}
-
+	for _, result := range results {
 		detailsBytes, _ := json.Marshal(result)
 		details := string(detailsBytes)
-		urlStr := pageURL
+		urlStr := result.URL
 		e.db.InsertEvent(jobID, "axe_audit", &details, &urlStr)
 		audited++
 	}
