@@ -28,6 +28,7 @@ import (
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/robots"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/ssrf"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/storage"
+	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/textquality"
 	"github.com/ggonzalezaleman/seo-crawler-mcp/internal/urlutil"
 )
 
@@ -538,6 +539,11 @@ loop:
 			}()
 		}
 		auditWg.Wait()
+	}
+
+	// --- Post-crawl: text quality checks via LanguageTool ---
+	if completionErr == nil && e.config.LanguageToolURL != "" {
+		e.runTextQualityChecks(ctx, jobID)
 	}
 
 	// --- Post-crawl: recalculate inbound/outbound edge counts and true shortest-path depths on pages ---
@@ -1828,6 +1834,116 @@ func jsonStrPtr(v any) *string {
 	}
 	s := string(data)
 	return &s
+}
+
+// runTextQualityChecks runs LanguageTool on all crawled pages and creates
+// issues for spelling/grammar errors found.
+func (e *Engine) runTextQualityChecks(ctx context.Context, jobID string) {
+	client := textquality.NewLTClient(e.config.LanguageToolURL)
+	if !client.IsAvailable(ctx) {
+		log.Printf("engine: LanguageTool not available at %s, skipping text quality checks", e.config.LanguageToolURL)
+		return
+	}
+
+	rows, err := e.db.Query(`
+		SELECT p.url_id, u.normalized_url, f.id as fetch_id
+		FROM pages p
+		JOIN urls u ON u.id = p.url_id AND u.job_id = p.job_id
+		JOIN fetches f ON f.id = p.fetch_id AND f.job_id = p.job_id
+		WHERE p.job_id = ? AND p.word_count > 0
+	`, jobID)
+	if err != nil {
+		log.Printf("engine: text quality query failed: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	type pageRef struct {
+		urlID   int64
+		url     string
+		fetchID int64
+	}
+	var pages []pageRef
+	for rows.Next() {
+		var pr pageRef
+		if err := rows.Scan(&pr.urlID, &pr.url, &pr.fetchID); err != nil {
+			continue
+		}
+		pages = append(pages, pr)
+	}
+
+	if len(pages) == 0 {
+		return
+	}
+
+	log.Printf("engine: running text quality checks on %d pages via LanguageTool", len(pages))
+	totalFindings := 0
+
+	for _, pg := range pages {
+		if ctx.Err() != nil {
+			break
+		}
+		// Re-fetch and extract visible text for this page
+		fetchResult, fetchErr := e.fetcher.Fetch(pg.url)
+		if fetchErr != nil || fetchResult == nil || len(fetchResult.Body) == 0 {
+			continue
+		}
+		parsed, parseErr := parser.ParseHTML(fetchResult.Body, pg.url, fetchResult.ResponseHeaders)
+		if parseErr != nil || parsed.ExtractedText == "" {
+			continue
+		}
+		result, err := client.Check(ctx, parsed.ExtractedText, "auto")
+		if err != nil {
+			log.Printf("engine: text quality check failed for %s: %v", pg.url, err)
+			continue
+		}
+		if len(result.Matches) == 0 {
+			continue
+		}
+
+		totalFindings += len(result.Matches)
+
+		// Group by category for cleaner issue creation
+		for _, match := range result.Matches {
+			detailsJSON, _ := json.Marshal(map[string]interface{}{
+				"message":      match.Message,
+				"ruleId":       match.RuleID,
+				"category":     match.RuleCategory,
+				"context":      match.Context,
+				"sentence":     match.Sentence,
+				"offset":       match.Offset,
+				"length":       match.Length,
+				"replacements": match.Replacements,
+				"language":     result.Language,
+			})
+			details := string(detailsJSON)
+
+			severity := "info"
+			issueType := "text_quality_style"
+			switch {
+			case match.RuleCategory == "Possible Typo" || match.ShortMessage == "Spelling mistake":
+				issueType = "text_quality_spelling"
+				severity = "warning"
+			case match.RuleCategory == "Grammar" || match.RuleCategory == "Misc":
+				issueType = "text_quality_grammar"
+				severity = "warning"
+			case match.RuleCategory == "Punctuation":
+				issueType = "text_quality_punctuation"
+				severity = "info"
+			}
+
+			e.db.InsertIssue(storage.IssueInput{
+				JobID:       jobID,
+				URLID:       &pg.urlID,
+				IssueType:   issueType,
+				Severity:    severity,
+				Scope:       "page_local",
+				DetailsJSON: &details,
+			})
+		}
+	}
+
+	log.Printf("engine: text quality checks complete: %d findings across %d pages", totalFindings, len(pages))
 }
 
 // browserEnrichPages re-renders pages with Playwright (full scroll) to capture

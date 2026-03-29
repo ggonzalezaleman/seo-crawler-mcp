@@ -112,6 +112,10 @@ type Config struct {
 	// PSIDesktop enables desktop strategy in addition to mobile (default: mobile only).
 	PSIDesktop bool `json:"psiDesktop"`
 
+	// LanguageToolURL is the base URL of a LanguageTool server for text quality checks.
+	// If empty, text quality checks are skipped.
+	LanguageToolURL string `json:"languageToolUrl"`
+
 	// URL group overrides
 	URLGroups []URLGroupConfig `json:"urlGroups"`
 }
