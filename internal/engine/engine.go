@@ -517,7 +517,8 @@ loop:
 	// --- Post-crawl: Performance + Accessibility audits (parallel) ---
 	if completionErr == nil {
 		var auditWg sync.WaitGroup
-		if e.config.PSIAPIKey != "" {
+		log.Printf("engine: PSI API key configured: %v", e.config != nil && e.config.PSIAPIKey != "")
+		if e.config != nil && e.config.PSIAPIKey != "" {
 			auditWg.Add(1)
 			go func() {
 				defer auditWg.Done()
