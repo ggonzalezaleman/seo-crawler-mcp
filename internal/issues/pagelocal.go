@@ -41,6 +41,12 @@ type PageContext struct {
 	OGTitle              string
 	OGDescription        string
 	OGImage              string
+	OGUrl                string
+	OGType               string
+	TwitterCard          string
+	TwitterTitle         string
+	TwitterDescription   string
+	TwitterImage         string
 	JSONLDBlocks         int
 	MalformedJSONLD      bool
 	JSONLDRaw            string
@@ -205,12 +211,52 @@ func DetectPageLocalIssues(ctx PageContext, thresholds Thresholds, depth int) []
 	// Open Graph
 	if ctx.OGTitle == "" {
 		issues = append(issues, newIssue("missing_og_title", "info", map[string]any{}))
+	} else if len(ctx.OGTitle) > 90 {
+		issues = append(issues, newIssue("og_title_too_long", "info", map[string]any{
+			"length": len(ctx.OGTitle),
+			"limit":  90,
+		}))
 	}
 	if ctx.OGDescription == "" {
 		issues = append(issues, newIssue("missing_og_description", "info", map[string]any{}))
+	} else if len(ctx.OGDescription) > 200 {
+		issues = append(issues, newIssue("og_description_too_long", "info", map[string]any{
+			"length": len(ctx.OGDescription),
+			"limit":  200,
+		}))
 	}
 	if ctx.OGImage == "" {
 		issues = append(issues, newIssue("missing_og_image", "info", map[string]any{}))
+	}
+	if ctx.OGUrl == "" {
+		issues = append(issues, newIssue("missing_og_url", "info", map[string]any{}))
+	} else if ctx.CanonicalRaw != "" && ctx.OGUrl != ctx.CanonicalRaw {
+		issues = append(issues, newIssue("og_url_canonical_mismatch", "warning", map[string]any{
+			"ogUrl":     ctx.OGUrl,
+			"canonical": ctx.CanonicalRaw,
+		}))
+	}
+	if ctx.OGType == "" {
+		issues = append(issues, newIssue("missing_og_type", "info", map[string]any{}))
+	}
+
+	// Twitter Card
+	if ctx.TwitterCard == "" {
+		issues = append(issues, newIssue("missing_twitter_card", "info", map[string]any{}))
+	} else {
+		validCards := map[string]bool{"summary": true, "summary_large_image": true, "app": true, "player": true}
+		if !validCards[ctx.TwitterCard] {
+			issues = append(issues, newIssue("invalid_twitter_card_type", "warning", map[string]any{
+				"value": ctx.TwitterCard,
+				"valid": "summary, summary_large_image, app, player",
+			}))
+		}
+	}
+	if ctx.TwitterTitle == "" && ctx.OGTitle == "" {
+		issues = append(issues, newIssue("missing_twitter_title", "info", map[string]any{}))
+	}
+	if ctx.TwitterImage == "" && ctx.OGImage == "" {
+		issues = append(issues, newIssue("missing_twitter_image", "info", map[string]any{}))
 	}
 
 	// Structured Data
