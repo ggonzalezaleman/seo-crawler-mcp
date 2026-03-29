@@ -462,7 +462,9 @@ func ParseHTML(body []byte, pageURL string, responseHeaders http.Header) (*Parse
 	r.ContentHash = fmt.Sprintf("%x", hash)
 
 	// JS suspect
-	r.JSSuspect = r.ExtractedWordCount < 50 && (r.HasSPARoot || r.ScriptCount >= 5)
+	// Mark as JS suspect if: SPA root detected (always, since content depends on JS),
+	// OR very little visible text with many scripts.
+	r.JSSuspect = r.HasSPARoot || (r.ExtractedWordCount < 50 && r.ScriptCount >= 5)
 
 	// Detect title outside <head> (inside <body>)
 	doc.Find("body title").Each(func(_ int, s *goquery.Selection) {
