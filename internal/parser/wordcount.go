@@ -6,9 +6,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 )
 
-// ExtractVisibleText extracts all visible text from an HTML document
-// without mutating the original DOM tree.
-func ExtractVisibleText(doc *goquery.Document) string {
+func extractVisibleTextFromSelection(sel *goquery.Selection) string {
 	var buf strings.Builder
 	var extract func(*goquery.Selection)
 	extract = func(s *goquery.Selection) {
@@ -24,8 +22,14 @@ func ExtractVisibleText(doc *goquery.Document) string {
 			}
 		})
 	}
-	extract(doc.Find("body"))
+	extract(sel)
 	return strings.TrimSpace(buf.String())
+}
+
+// ExtractVisibleText extracts all visible text from an HTML document
+// without mutating the original DOM tree.
+func ExtractVisibleText(doc *goquery.Document) string {
+	return extractVisibleTextFromSelection(doc.Find("body"))
 }
 
 // ExtractMainContentText extracts text from main content areas.
@@ -37,7 +41,7 @@ func ExtractMainContentText(doc *goquery.Document) string {
 	if mainSel.Length() > 0 {
 		var parts []string
 		mainSel.Each(func(_ int, s *goquery.Selection) {
-			text := strings.TrimSpace(s.Text())
+			text := extractVisibleTextFromSelection(s)
 			if text != "" {
 				parts = append(parts, text)
 			}
@@ -45,10 +49,12 @@ func ExtractMainContentText(doc *goquery.Document) string {
 		return strings.Join(parts, " ")
 	}
 
-	// Fallback: body minus nav/header/footer/aside.
+	// Fallback: body minus nav/header/footer/aside, using the same visible-text
+	// extraction path as total word count so main content can never exceed it due
+	// to script/style/noscript or hidden-like artifacts from Selection.Text().
 	body := doc.Find("body").Clone()
 	body.Find("nav, header, footer, aside").Remove()
-	return strings.TrimSpace(body.Text())
+	return extractVisibleTextFromSelection(body)
 }
 
 // CountWords counts non-empty whitespace-separated tokens.

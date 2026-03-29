@@ -66,3 +66,32 @@ func TestMainContentWordCount_Fallback(t *testing.T) {
 		t.Errorf("fallback word count = %d, want 6 (got text: %q)", count, text)
 	}
 }
+
+func TestMainContentWordCount_DoesNotCountScriptOrNoscript(t *testing.T) {
+	html := `<html><body>
+		<div>Visible body copy here</div>
+		<script>console.log('secret script words')</script>
+		<noscript>Fallback noscript copy should not count</noscript>
+		<style>.foo { content: 'style words'; }</style>
+	</body></html>`
+
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	allText := ExtractVisibleText(doc)
+	mainText := ExtractMainContentText(doc)
+	allCount := CountWords(allText)
+	mainCount := CountWords(mainText)
+
+	if allCount != 4 {
+		t.Fatalf("visible word count = %d, want 4 (got text: %q)", allCount, allText)
+	}
+	if mainCount != 4 {
+		t.Fatalf("main content word count = %d, want 4 (got text: %q)", mainCount, mainText)
+	}
+	if mainCount > allCount {
+		t.Fatalf("main content count %d should never exceed total visible count %d", mainCount, allCount)
+	}
+}
