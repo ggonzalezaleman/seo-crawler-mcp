@@ -1892,7 +1892,7 @@ func (e *Engine) runTextQualityChecks(ctx context.Context, jobID string) {
 		if parseErr != nil || parsed.ExtractedText == "" {
 			continue
 		}
-		result, err := client.Check(ctx, parsed.ExtractedText, "auto")
+		result, err := client.Check(ctx, parsed.ExtractedText, "en-US")
 		if err != nil {
 			log.Printf("engine: text quality check failed for %s: %v", pg.url, err)
 			continue
@@ -1903,8 +1903,21 @@ func (e *Engine) runTextQualityChecks(ctx context.Context, jobID string) {
 
 		totalFindings += len(result.Matches)
 
+		// Filter out noisy rules that produce false positives from HTML-extracted text
+		noisyRules := map[string]bool{
+			"WHITESPACE_RULE":              true,
+			"CONSECUTIVE_SPACES":           true,
+			"COMMA_PARENTHESIS_WHITESPACE": true,
+			"SENTENCE_WHITESPACE":          true,
+			"EN_UNPAIRED_BRACKETS":         true,
+			"UPPERCASE_SENTENCE_START":     true,
+		}
+
 		// Group by category for cleaner issue creation
 		for _, match := range result.Matches {
+			if noisyRules[match.RuleID] {
+				continue
+			}
 			detailsJSON, _ := json.Marshal(map[string]interface{}{
 				"message":      match.Message,
 				"ruleId":       match.RuleID,
