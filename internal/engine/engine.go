@@ -535,7 +535,7 @@ loop:
 		auditWg.Wait()
 	}
 
-	// --- Post-crawl: recalculate inbound/outbound edge counts on pages ---
+	// --- Post-crawl: recalculate inbound/outbound edge counts and true shortest-path depths on pages ---
 	if completionErr == nil {
 		e.db.Exec(`
 			UPDATE pages SET inbound_edge_count = (
@@ -551,6 +551,9 @@ loop:
 				  AND e.source_url_id = pages.url_id
 				  AND e.is_internal = 1 AND e.relation_type = 'link'
 			) WHERE job_id = ?`, jobID)
+		if depthErr := e.recomputePageDepths(jobID); depthErr != nil {
+			log.Printf("engine: page depth recomputation failed: %v", depthErr)
+		}
 		log.Printf("engine: recalculated edge counts for job %s", jobID)
 	}
 
@@ -1840,5 +1843,133 @@ func countImagesWithEmptyAlt(images []parser.DiscoveredImage) int {
 		}
 	}
 	return count
+}
+
+// recomputePageDepths recalculates page depth from the final internal link graph,
+// using the shortest path from the job's seed URLs. This avoids stale depths when
+// a page is first discovered via a longer path and a shorter path is found later.
+func (e *Engine) recomputePageDepths(jobID string) error {
+	job, err := e.db.GetJob(jobID)
+	if err != nil {
+		return fmt.Errorf("get job: %w", err)
+	}
+
+	var seedURLs []string
+	if err := json.Unmarshal([]byte(job.SeedURLs), &seedURLs); err != nil {
+		return fmt.Errorf("parse seed urls: %w", err)
+	}
+
+	pageRows, err := e.db.Query(`
+		SELECT u.id, u.normalized_url, p.depth
+		FROM pages p
+		JOIN urls u ON u.id = p.url_id AND u.job_id = p.job_id
+		WHERE p.job_id = ?
+	`, jobID)
+	if err != nil {
+		return fmt.Errorf("query pages: %w", err)
+	}
+	defer pageRows.Close()
+
+	type pageNode struct {
+		urlID  int64
+		depth  int
+	}
+	pages := map[string]pageNode{}
+	for pageRows.Next() {
+		var urlID int64
+		var normalizedURL string
+		var depth int
+		if err := pageRows.Scan(&urlID, &normalizedURL, &depth); err != nil {
+			return fmt.Errorf("scan page: %w", err)
+		}
+		pages[normalizedURL] = pageNode{urlID: urlID, depth: depth}
+	}
+	if err := pageRows.Err(); err != nil {
+		return fmt.Errorf("iterate pages: %w", err)
+	}
+	if len(pages) == 0 {
+		return nil
+	}
+
+	adj := map[string][]string{}
+	edgeRows, err := e.db.Query(`
+		SELECT su.normalized_url, tu.normalized_url
+		FROM edges e
+		JOIN urls su ON su.id = e.source_url_id AND su.job_id = e.job_id
+		JOIN urls tu ON tu.normalized_url = e.declared_target_url AND tu.job_id = e.job_id
+		JOIN pages sp ON sp.url_id = su.id AND sp.job_id = su.job_id
+		JOIN pages tp ON tp.url_id = tu.id AND tp.job_id = tu.job_id
+		WHERE e.job_id = ?
+		  AND e.is_internal = 1
+		  AND e.relation_type = 'link'
+	`, jobID)
+	if err != nil {
+		return fmt.Errorf("query edges: %w", err)
+	}
+	defer edgeRows.Close()
+	for edgeRows.Next() {
+		var sourceURL, targetURL string
+		if err := edgeRows.Scan(&sourceURL, &targetURL); err != nil {
+			return fmt.Errorf("scan edge: %w", err)
+		}
+		adj[sourceURL] = append(adj[sourceURL], targetURL)
+	}
+	if err := edgeRows.Err(); err != nil {
+		return fmt.Errorf("iterate edges: %w", err)
+	}
+
+	depths := map[string]int{}
+	queue := make([]string, 0, len(seedURLs))
+	for _, seed := range seedURLs {
+		normalizedSeed, normErr := urlutil.Normalize(seed)
+		if normErr != nil {
+			continue
+		}
+		if _, ok := pages[normalizedSeed]; !ok {
+			continue
+		}
+		if _, seen := depths[normalizedSeed]; seen {
+			continue
+		}
+		depths[normalizedSeed] = 0
+		queue = append(queue, normalizedSeed)
+	}
+
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		currentDepth := depths[current]
+		for _, next := range adj[current] {
+			if _, ok := pages[next]; !ok {
+				continue
+			}
+			if _, seen := depths[next]; seen {
+				continue
+			}
+			depths[next] = currentDepth + 1
+			queue = append(queue, next)
+		}
+	}
+
+	tx, err := e.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin depth tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	for normalizedURL, page := range pages {
+		depth := page.depth
+		if recomputedDepth, ok := depths[normalizedURL]; ok {
+			depth = recomputedDepth
+		}
+		if _, err := tx.Exec(`UPDATE pages SET depth = ? WHERE job_id = ? AND url_id = ?`, depth, jobID, page.urlID); err != nil {
+			return fmt.Errorf("update depth for %s: %w", normalizedURL, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit depth tx: %w", err)
+	}
+	return nil
 }
 
