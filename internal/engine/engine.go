@@ -1926,7 +1926,7 @@ func (e *Engine) checkMarkdownNegotiation(ctx context.Context, jobID string) {
 	details := string(detailsJSON)
 	e.db.InsertEvent(jobID, "markdown_negotiation", &details, nil)
 
-	// Create issues for pages that DO support it (positive finding)
+	// Create issues for markdown negotiation status
 	for _, r := range results {
 		if r.Supports {
 			d, _ := json.Marshal(map[string]interface{}{
@@ -1937,6 +1937,19 @@ func (e *Engine) checkMarkdownNegotiation(ctx context.Context, jobID string) {
 			e.db.InsertIssue(storage.IssueInput{
 				JobID:       jobID,
 				IssueType:   "supports_markdown_negotiation",
+				Severity:    "info",
+				Scope:       "page_local",
+				DetailsJSON: &ds,
+			})
+		} else {
+			d, _ := json.Marshal(map[string]interface{}{
+				"url":         r.URL,
+				"contentType": r.ContentType,
+			})
+			ds := string(d)
+			e.db.InsertIssue(storage.IssueInput{
+				JobID:       jobID,
+				IssueType:   "missing_markdown_negotiation",
 				Severity:    "info",
 				Scope:       "page_local",
 				DetailsJSON: &ds,
